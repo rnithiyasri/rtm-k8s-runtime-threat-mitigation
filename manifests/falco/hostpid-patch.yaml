@@ -1,0 +1,11 @@
+# WSL2 hostPID patch for Falco DaemonSet
+# Falco chart 9.2.0 does not expose hostPID in values.yaml.
+# Without hostPID=true on WSL2, Falco logs:
+#   "disabled BPF iterators (not running in the root PID namespace)"
+# and captures ZERO syscalls from other containers.
+# Apply after every helm install/upgrade:
+#   kubectl patch daemonset falco -n falco --patch-file manifests/falco/hostpid-patch.yaml
+spec:
+  template:
+    spec:
+      hostPID: true

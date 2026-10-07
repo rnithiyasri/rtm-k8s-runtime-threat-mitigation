@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stub-receiver
+  namespace: shop
+  labels:
+    app: stub-receiver
+    app.kubernetes.io/part-of: rtm-shop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stub-receiver
+  template:
+    metadata:
+      labels:
+        app: stub-receiver
+        app.kubernetes.io/part-of: rtm-shop
+    spec:
+      containers:
+        - name: stub-receiver
+          image: stub-receiver:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stub-receiver
+  namespace: shop
+  labels:
+    app: stub-receiver
+    app.kubernetes.io/part-of: rtm-shop
+spec:
+  selector:
+    app: stub-receiver
+  ports:
+    - port: 8000
+      targetPort: 8000
+  type: ClusterIP
