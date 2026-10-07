@@ -20,6 +20,8 @@ echo "==> Installing Falco (chart ${FALCO_CHART_VERSION}, Falco 0.45.0)..."
 helm upgrade --install falco falcosecurity/falco \
   --namespace falco \
   --version "${FALCO_CHART_VERSION}" \
+  --set falco.rule_matching=all \
+  --set falco.rule_matching=all \
   --values "${REPO_ROOT}/manifests/falco/falco-values.yaml" \
   --set-file "customRules.rtm-custom-rules\.yaml=${REPO_ROOT}/manifests/falco/rtm-custom-rules.yaml" \
   --wait --timeout 5m
