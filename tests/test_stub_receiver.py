@@ -62,3 +62,7 @@ def test_ring_buffer_keeps_last_200():
 
 def test_empty_store():
     assert AlertStore().recent() == []
+
+def test_empty_tags_are_dropped():
+    a = parse_alert({"rule": "RTM-001 x", "tags": ["", "rtm", "response_alert_only"]})
+    assert a["tags"] == ["rtm", "response_alert_only"]

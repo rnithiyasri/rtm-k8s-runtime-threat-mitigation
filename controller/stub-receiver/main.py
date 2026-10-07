@@ -27,7 +27,7 @@ def parse_alert(body: dict) -> Optional[dict]:
     match = RTM_ID_RE.match(rule)
     if not match:
         return None
-    tags = body.get("tags") or []
+    tags = [t for t in (body.get("tags") or []) if t]
     hint = next(
         (t[len("response_"):] for t in tags if t.startswith("response_")),
         "unknown",
