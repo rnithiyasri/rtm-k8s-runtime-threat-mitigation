@@ -66,3 +66,26 @@ def test_empty_store():
 def test_empty_tags_are_dropped():
     a = parse_alert({"rule": "RTM-001 x", "tags": ["", "rtm", "response_alert_only"]})
     assert a["tags"] == ["rtm", "response_alert_only"]
+
+
+def test_tags_string_from_falcosidekick():
+    a = parse_alert({"rule": "RTM-003 x", "tags": "rtm,credential_access,T1528,response_isolate_network"})
+    assert a["response_hint"] == "isolate_network"
+    assert "T1528" in a["tags"]
+
+
+def test_http_recent_stores_rtm_only():
+    from fastapi.testclient import TestClient
+    from main import app, store
+
+    store.clear()
+    client = TestClient(app)
+    ignored = client.post("/alerts", json={"rule": "Terminal shell in container", "priority": "Warning"})
+    assert ignored.json()["stored"] is False
+    stored = client.post("/alerts", json=SAMPLE)
+    assert stored.json()["stored"] is True
+    recent = client.get("/alerts/recent")
+    body = recent.json()
+    assert body["count"] == 1
+    assert body["alerts"][0]["rtm_id"] == "RTM-002"
+    assert body["alerts"][0]["namespace"] == "shop"
