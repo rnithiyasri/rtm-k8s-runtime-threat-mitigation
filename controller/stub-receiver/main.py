@@ -27,7 +27,10 @@ def parse_alert(body: dict) -> Optional[dict]:
     match = RTM_ID_RE.match(rule)
     if not match:
         return None
-    tags = [t for t in (body.get("tags") or []) if t]
+    raw_tags = body.get("tags") or []
+    if isinstance(raw_tags, str):
+        raw_tags = [t.strip() for t in raw_tags.split(",")]
+    tags = [t for t in raw_tags if t]
     hint = next(
         (t[len("response_"):] for t in tags if t.startswith("response_")),
         "unknown",
@@ -45,7 +48,7 @@ def parse_alert(body: dict) -> Optional[dict]:
         "container_id": fields.get("container.id"),
         "user": fields.get("user.name"),
         "cmdline": fields.get("proc.cmdline"),
-        "hostname": body.get("hostname"),
+        "hostname": body.get("hostname") or fields.get("hostname"),
     }
 
 
@@ -63,6 +66,10 @@ class AlertStore:
     def recent(self) -> list:
         with self._lock:
             return list(self._items)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._items.clear()
 
     def __len__(self) -> int:
         with self._lock:
