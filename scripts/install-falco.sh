@@ -21,6 +21,7 @@ helm upgrade --install falco falcosecurity/falco \
   --namespace falco \
   --version "${FALCO_CHART_VERSION}" \
   --values "${REPO_ROOT}/manifests/falco/falco-values.yaml" \
+  --set-file "customRules.rtm-custom-rules\.yaml=${REPO_ROOT}/manifests/falco/rtm-custom-rules.yaml" \
   --wait --timeout 5m
 
 # WSL2 FIX: chart does not expose hostPID; patch it so BPF iterators work
