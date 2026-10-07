@@ -1,0 +1,34 @@
+# Falco Helm values — chart 9.2.0 / Falco 0.45.0
+# WSL2 NOTE: hostPID is NOT settable via chart values (not exposed).
+# After install, apply manifests/falco/hostpid-patch.yaml via kubectl patch.
+
+driver:
+  kind: modern_ebpf
+  modern_ebpf:
+    cpusForEachBuffer: 2
+
+falco:
+  json_output: true
+  json_include_output_property: true
+  log_stderr: true
+  log_syslog: false
+  log_level: info
+  priority: debug
+
+  stdout_output:
+    enabled: true
+
+  syslog_output:
+    enabled: false
+
+  # Send alerts to Falcosidekick
+  http_output:
+    enabled: true
+    url: "http://falco-falcosidekick:2801"
+    user_agent: "falcosecurity/falco"
+
+tolerations:
+  - effect: NoSchedule
+    operator: Exists
+  - effect: NoExecute
+    operator: Exists
