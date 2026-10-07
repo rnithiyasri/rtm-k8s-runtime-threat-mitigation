@@ -1,0 +1,10 @@
+# Falcosidekick Helm values — chart 0.14.0 / app 2.31.1
+replicaCount: 1
+
+config:
+  webhook:
+    address: "http://stub-receiver.shop.svc.cluster.local:8000/alerts"
+    minimumpriority: ""
+
+webui:
+  enabled: false
