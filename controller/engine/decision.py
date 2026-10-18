@@ -20,8 +20,11 @@ def evaluate_dry_run(
     pod_labels: Optional[dict],
     dry_run_env: bool = True,
     selector: str = "rtm.enforce=true",
+    strategy: str = "graduated",
 ) -> bool:
     """Evaluate whether an action on a pod must stay dry-run."""
+    if strategy.lower() == "detect_only":
+        return True
     if dry_run_env:
         return True
     if not is_enforced(pod_labels, selector):
@@ -37,10 +40,12 @@ class DecisionEngine:
         clock: Callable[[], float] = time.time,
         window_s: float = 300.0,
         dedupe_s: float = 10.0,
+        strategy: str = "graduated",
     ):
         self.clock = clock
         self.window_s = window_s
         self.dedupe_s = dedupe_s
+        self.strategy = strategy.lower()
         # pod -> list of (timestamp, rtm_id)
         self._pod_history: Dict[str, List[Tuple[float, str]]] = {}
         # pod -> dict of rtm_id -> last_seen_timestamp
@@ -95,33 +100,43 @@ class DecisionEngine:
         if "kill_pod" in taken:
             return None
 
-        # Determine planned action from hint
-        hint = alert.get("response_hint")
-        if hint == "kill_pod":
+        strat = self.strategy.lower()
+        if strat == "always_delete":
             planned_action = "kill_pod"
-            reason = "hint_kill_pod"
-        elif hint == "isolate_network":
-            planned_action = "isolate_network"
-            reason = "hint_isolate_network"
-        else:
+            reason = "strategy_always_delete"
+            taken.add("kill_pod")
+        elif strat == "detect_only":
             planned_action = "alert_only"
-            reason = "hint_alert_only"
+            reason = "strategy_detect_only"
+        else:  # graduated (default)
+            # Determine planned action from hint
+            hint = alert.get("response_hint")
+            if hint == "kill_pod":
+                planned_action = "kill_pod"
+                reason = "hint_kill_pod"
+            elif hint == "isolate_network":
+                planned_action = "isolate_network"
+                reason = "hint_isolate_network"
+            else:
+                planned_action = "alert_only"
+                reason = "hint_alert_only"
 
-        # If isolate_network was already taken, suppress repeat isolate or alert_only actions
-        if "isolate_network" in taken and planned_action != "kill_pod":
-            return None
-
-        # Escalation rule: 3 or more DIFFERENT rtm_ids on one pod within 300 s -> delete it
-        if len(unique_rtms) >= 3:
-            planned_action = "kill_pod"
-            reason = "escalation_3_different_rules"
-
-        if planned_action in ("isolate_network", "kill_pod"):
-            if planned_action in taken:
+            # If isolate_network was already taken, suppress repeat isolate or alert_only actions
+            if "isolate_network" in taken and planned_action != "kill_pod":
                 return None
-            taken.add(planned_action)
+
+            # Escalation rule: 3 or more DIFFERENT rtm_ids on one pod within 300 s -> delete it
+            if len(unique_rtms) >= 3:
+                planned_action = "kill_pod"
+                reason = "escalation_3_different_rules"
+
+            if planned_action in ("isolate_network", "kill_pod"):
+                if planned_action in taken:
+                    return None
+                taken.add(planned_action)
 
         return {
+            "strategy": strat,
             "pod": pod,
             "rtm_ids": unique_rtms,
             "action": planned_action,

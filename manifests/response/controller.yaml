@@ -23,6 +23,8 @@ spec:
           ports:
             - containerPort: 8000
           env:
+            - name: STRATEGY
+              value: "graduated"
             - name: DRY_RUN
               value: "true"
             - name: ENFORCE_LABEL_SELECTOR

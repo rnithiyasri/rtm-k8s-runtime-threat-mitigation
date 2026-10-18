@@ -29,6 +29,11 @@ logger = logging.getLogger("rtm-controller")
 DRY_RUN_ENV = os.getenv("DRY_RUN", "true").lower() in ("true", "1", "yes")
 ENFORCE_LABEL_SELECTOR = os.getenv("ENFORCE_LABEL_SELECTOR", "rtm.enforce=true")
 
+
+def get_strategy() -> str:
+    return os.getenv("STRATEGY", "graduated").lower()
+
+
 # Initialize Kubernetes API client (fail gracefully in test/mock environments)
 v1_api: Optional[client.CoreV1Api] = None
 try:
@@ -98,7 +103,7 @@ class AlertStore:
 
 
 store = AlertStore()
-engine = DecisionEngine()
+engine = DecisionEngine(strategy=get_strategy())
 app = FastAPI(title="rtm-controller")
 
 
@@ -129,6 +134,10 @@ async def receive_alert(request: Request):
     store.add(alert)
     logger.info(json.dumps(alert, separators=(",", ":")))
 
+    # Sync strategy from current environment
+    current_strategy = get_strategy()
+    engine.strategy = current_strategy
+
     # Evaluate decision
     decision = engine.decide(alert)
     if decision is None:
@@ -152,13 +161,14 @@ async def receive_alert(request: Request):
         pod_labels=pod_labels,
         dry_run_env=DRY_RUN_ENV,
         selector=ENFORCE_LABEL_SELECTOR,
+        strategy=current_strategy,
     )
 
     if is_dry:
-        logger.info("WOULD %s pod %s", action, pod)
+        logger.info("STRATEGY=%s WOULD %s pod %s", current_strategy, action, pod)
     else:
-        logger.info("ACTION %s pod %s", action, pod)
-        if v1_api is not None:
+        logger.info("STRATEGY=%s ACTION %s pod %s", current_strategy, action, pod)
+        if current_strategy != "detect_only" and v1_api is not None:
             if action == "isolate_network":
                 try:
                     v1_api.patch_namespaced_pod(
@@ -176,8 +186,9 @@ async def receive_alert(request: Request):
 
     action_done_ts = time.time()
 
-    # One JSON log line per decision
+    # One JSON log line per decision, including strategy
     decision_record = {
+        "strategy": current_strategy,
         "pod": pod,
         "rtm_ids": decision["rtm_ids"],
         "action": action,

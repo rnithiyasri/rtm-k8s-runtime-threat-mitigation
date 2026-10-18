@@ -147,3 +147,41 @@ def test_never_repeat_action():
     # Further actions on the killed pod are suppressed
     d4 = engine.decide(make_alert(rtm_id="RTM-007", hint="kill_pod", pod="p-rep"), now=45.0)
     assert d4 is None
+
+
+def test_strategy_always_delete():
+    """Verify always_delete strategy deletes pod on any valid alert."""
+    engine = DecisionEngine(strategy="always_delete")
+
+    # alert_only hint -> deletes pod
+    d1 = engine.decide(make_alert(rtm_id="RTM-001", hint="alert_only", pod="p-del"), now=10.0)
+    assert d1 is not None
+    assert d1["action"] == "kill_pod"
+    assert d1["strategy"] == "always_delete"
+
+    # Subsequent alert on same pod -> suppressed because kill_pod already taken
+    d2 = engine.decide(make_alert(rtm_id="RTM-002", hint="alert_only", pod="p-del"), now=30.0)
+    assert d2 is None
+
+    # Namespace check still applies
+    d3 = engine.decide(make_alert(rtm_id="RTM-001", hint="alert_only", pod="p-del2", ns="default"), now=10.0)
+    assert d3 is None
+
+
+def test_strategy_detect_only():
+    """Verify detect_only strategy never mutates and maps to alert_only."""
+    engine = DecisionEngine(strategy="detect_only")
+
+    # kill_pod hint -> alert_only
+    d1 = engine.decide(make_alert(rtm_id="RTM-007", hint="kill_pod", pod="p-det"), now=10.0)
+    assert d1 is not None
+    assert d1["action"] == "alert_only"
+    assert d1["strategy"] == "detect_only"
+
+    # isolate_network hint -> alert_only
+    d2 = engine.decide(make_alert(rtm_id="RTM-003", hint="isolate_network", pod="p-det2"), now=10.0)
+    assert d2 is not None
+    assert d2["action"] == "alert_only"
+
+    # evaluate_dry_run with detect_only stays dry even if dry_run_env=False and enforced
+    assert evaluate_dry_run({"rtm.enforce": "true"}, dry_run_env=False, strategy="detect_only") is True
