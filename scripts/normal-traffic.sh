@@ -5,6 +5,8 @@
 set -euo pipefail
 
 SHOP_NS="${SHOP_NS:-shop}"
+RECEIVER_NS="${RECEIVER_NS:-${SHOP_NS}}"
+RECEIVER_SVC="${RECEIVER_SVC:-stub-receiver}"
 TOOLS_NS="${TOOLS_NS:-rtm-tools}"
 PF_PORT="${PF_PORT:-18765}"
 DURATION="${TRAFFIC_DURATION_SECS:-120}"
@@ -16,7 +18,7 @@ kubectl create namespace "${TOOLS_NS}" --dry-run=client -o yaml | kubectl apply 
 PF_PID=""
 if ! curl -sf "http://127.0.0.1:${PF_PORT}/healthz" >/dev/null 2>&1; then
   echo "==> Starting port-forward to stub-receiver on port ${PF_PORT}..."
-  kubectl port-forward -n "${SHOP_NS}" svc/stub-receiver "${PF_PORT}:8000" >/dev/null 2>&1 &
+  kubectl port-forward -n "${RECEIVER_NS}" "svc/${RECEIVER_SVC}" "${PF_PORT}:8000" >/dev/null 2>&1 &
   PF_PID=$!
   sleep 2
 fi

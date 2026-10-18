@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rtm-controller
+  namespace: rtm-system
+  labels:
+    app: rtm-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rtm-controller
+  template:
+    metadata:
+      labels:
+        app: rtm-controller
+    spec:
+      serviceAccountName: rtm-controller
+      containers:
+        - name: rtm-controller
+          image: rtm-controller:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DRY_RUN
+              value: "true"
+            - name: ENFORCE_LABEL_SELECTOR
+              value: "rtm.enforce=true"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rtm-controller
+  namespace: rtm-system
+  labels:
+    app: rtm-controller
+spec:
+  selector:
+    app: rtm-controller
+  ports:
+    - port: 8000
+      targetPort: 8000
+  type: ClusterIP

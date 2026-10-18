@@ -6,6 +6,8 @@
 set -euo pipefail
 
 NS="${SHOP_NS:-shop}"
+RECEIVER_NS="${RECEIVER_NS:-${NS}}"
+RECEIVER_SVC="${RECEIVER_SVC:-stub-receiver}"
 WAIT="${VERIFY_WAIT_SECS:-20}"
 PF_PORT="${PF_PORT:-18765}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -24,7 +26,7 @@ stub_pod() {
 
 # Start port-forward to stub-receiver in background
 start_pf() {
-  kubectl port-forward -n "${NS}" svc/stub-receiver "${PF_PORT}:8000" \
+  kubectl port-forward -n "${RECEIVER_NS}" "svc/${RECEIVER_SVC}" "${PF_PORT}:8000" \
     >/dev/null 2>&1 &
   PF_PID=$!
   sleep 2   # wait for it to bind
