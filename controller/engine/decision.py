@@ -90,26 +90,34 @@ class DecisionEngine:
         # Unique RTM IDs seen on this pod within the window
         unique_rtms = sorted(list({r for _, r in self._pod_history[pod]}))
 
+        # Check: Never repeat an action already taken on that pod
+        taken = self._actions_taken.setdefault(pod, set())
+        if "kill_pod" in taken:
+            return None
+
+        # Determine planned action from hint
+        hint = alert.get("response_hint")
+        if hint == "kill_pod":
+            planned_action = "kill_pod"
+            reason = "hint_kill_pod"
+        elif hint == "isolate_network":
+            planned_action = "isolate_network"
+            reason = "hint_isolate_network"
+        else:
+            planned_action = "alert_only"
+            reason = "hint_alert_only"
+
+        # If isolate_network was already taken, suppress repeat isolate or alert_only actions
+        if "isolate_network" in taken and planned_action != "kill_pod":
+            return None
+
         # Escalation rule: 3 or more DIFFERENT rtm_ids on one pod within 300 s -> delete it
         if len(unique_rtms) >= 3:
             planned_action = "kill_pod"
             reason = "escalation_3_different_rules"
-        else:
-            hint = alert.get("response_hint")
-            if hint == "kill_pod":
-                planned_action = "kill_pod"
-                reason = "hint_kill_pod"
-            elif hint == "isolate_network":
-                planned_action = "isolate_network"
-                reason = "hint_isolate_network"
-            else:
-                planned_action = "alert_only"
-                reason = "hint_alert_only"
 
-        # Check: Never repeat an action already taken on that pod
-        taken = self._actions_taken.setdefault(pod, set())
         if planned_action in ("isolate_network", "kill_pod"):
-            if planned_action in taken or "kill_pod" in taken:
+            if planned_action in taken:
                 return None
             taken.add(planned_action)
 
