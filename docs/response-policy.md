@@ -39,17 +39,38 @@ The response engine operates under strict defense-in-depth safety controls:
 
 ## 4. Measured Limitations & Empirical Findings
 
-Empirical testing on kind (Kubernetes v1.31 with Calico/modern_ebpf Falco) revealed several critical runtime characteristics:
+Empirical testing on kind (Kubernetes v1.31 with kindnet v20241108 / modern_ebpf Falco) revealed several critical runtime characteristics:
 
-1. **Established TCP Connections Survive Network Isolation**:
-   - Applying `rtm.tier=restrict` or `rtm.tier=quarantine` to a running pod **does not sever existing established TCP sockets**.
-   - In capability tests B1 and B2, active client and server connections delivered 100% of packets (155/155 and 133/133 pings across 120s) while new incoming and outgoing connections were blocked.
-   - *Implication*: NetworkPolicy alone cannot terminate an already established attacker C2 reverse shell. Terminating interactive sessions requires pod deletion (`kill_pod`) or container killing.
-2. **Ingress Restriction Flapping on Running Pods**:
-   - Testing inbound quarantine on running pods showed unreliability and flapping (inbound probes succeeded in multiple test intervals). Therefore, Phase 2 implements **egress restriction only** via `rtm-restrict`.
-3. **Startup Flapping on Pods Created with Restrict Labels**:
+1. **Established Connections Survived QUARANTINE Label**:
+   - Applying `rtm.tier=quarantine` to a running pod did NOT sever existing established TCP sockets: active client and server connections survived (155/155 and 133/133 pings delivered across 120 s).
+   - Egress restriction (`rtm.tier=restrict`) was **NOT tested against established connections**.
+   - *Implication*: NetworkPolicy alone cannot be assumed to terminate an already established attacker C2 reverse shell. Terminating interactive sessions requires pod deletion (`kill_pod`).
+2. **Flapping and Asymmetric Enforcement in Quarantine Tests (B1 & B2)**:
+   - In Test B1: new outbound connections from the labelled client were blocked for about 140 s, then succeeded again at t+153 s.
+   - In Test B2: new inbound connections to the labelled server were NOT blocked in any of 12 samples.
+   - Enforcement flapped in tests A2 and B1, cause unknown.
+   - Consequently, the quarantine tier is **not implemented (dropped)**.
+3. **Deterministic Egress Restriction on Running Pods**:
+   - In contrast to quarantine, dynamic egress restriction (`rtm.tier=restrict`) on a running pod blocked new egress in 1 to 3 s in Test A1 and in 59/59 probes in S2 (and 60/60 in extended verification).
+4. **Startup Flapping on Pods Created with Restrict Labels**:
    - When a replacement pod is created with `rtm.tier=restrict` pre-set, a race condition during CNI interface provisioning permits a 0–12 second window of traffic leakage before network policies lock down. Running pods labeled dynamically achieve deterministic enforcement within 1–3 seconds.
-4. **In-Memory State**:
+5. **In-Memory State**:
    - Decision engine history, deduplication timestamps, and action records reside entirely in-memory within the controller container. A controller pod restart resets history and counters.
-5. **Dropped Alert Metadata**:
+6. **Dropped Alert Metadata**:
    - The normalized alert contract ingested by the controller extracts pod name, container ID, rule ID, and command-line, but drops raw packet data such as dynamic destination IP and port numbers.
+
+---
+
+## 5. Pull Request Description Draft
+
+### Summary of Changes
+- Implements graduated response controller in `controller/engine/` listening to Falcosidekick webhook events.
+- Evaluates rules via hint mapping (`alert_only`, `isolate_network`, `kill_pod`) with 10s deduplication and 3-rule/300s escalation.
+- Enforces egress network isolation via `rtm-restrict` NetworkPolicy and pod deletion via CoreV1 API.
+- Implements strict safety guards: `DRY_RUN=true` by default, `rtm.enforce=true` opt-in label selector, and `shop` namespace containment.
+
+### What Was NOT Tested
+- `restrict` (`rtm.tier=restrict`) against established TCP connections.
+- Root cause of flapping observed during quarantine tests A2 and B1.
+- Ingress restriction against running pods.
+- Multi-replica controller state synchronization (controller is currently single-replica in-memory).
