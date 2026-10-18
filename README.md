@@ -43,6 +43,7 @@ normalises and stores them for a future response engine.
 | 1.5 | Custom RTM rules (RTM-001–RTM-008), attack sim, verify, docs | ✅ Done |
 | 2 | Response engine (kill-pod / isolate-network) | ✅ Done |
 | 3 | Policy engine (Kyverno integration) | ⏸ Out of Scope |
+| 5 | Empirical evaluation (detect_only vs always_delete vs graduated) | ✅ Done |
 
 ## Prerequisites
 
