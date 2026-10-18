@@ -41,7 +41,7 @@ normalises and stores them for a future response engine.
 | 0 | Kind cluster + demo app (`shop` namespace, 5 FastAPI services) | ✅ Done |
 | 1 | Falco baseline: Helm install, modern_ebpf, Falcosidekick, stub-receiver | ✅ Done |
 | 1.5 | Custom RTM rules (RTM-001–RTM-008), attack sim, verify, docs | ✅ Done |
-| 2 | Response engine (kill-pod / isolate-network) | ⏸ Out of Scope |
+| 2 | Response engine (kill-pod / isolate-network) | ✅ Done |
 | 3 | Policy engine (Kyverno integration) | ⏸ Out of Scope |
 
 ## Prerequisites
