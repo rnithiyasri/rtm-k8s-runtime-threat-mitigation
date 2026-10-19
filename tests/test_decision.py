@@ -228,3 +228,24 @@ def test_strategy_detect_only():
 
     # evaluate_dry_run with detect_only stays dry even if dry_run_env=False and enforced
     assert evaluate_dry_run({"rtm.enforce": "true"}, dry_run_env=False, strategy="detect_only") is True
+
+
+def test_controller_clock_used_for_dedupe_and_window():
+    """Verify dedupe and window use controller time, ignoring alert_ts skew."""
+    clock_time = 1000.0
+    engine = DecisionEngine(clock=lambda: clock_time)
+
+    # Alert with skewed/stale alert_ts from Falco
+    a1 = make_alert(rtm_id="RTM-001", hint="alert_only", pod="p-clock", ts="2020-01-01T00:00:00Z")
+    d1 = engine.decide(a1)
+    assert d1 is not None
+    assert d1["received_ts"] == 1000.0
+
+    # Alert 5s later on controller clock, but same alert_ts -> deduplicated by controller clock!
+    clock_time += 5.0
+    a2 = make_alert(rtm_id="RTM-001", hint="alert_only", pod="p-clock", ts="2020-01-01T00:00:00Z")
+    assert engine.decide(a2) is None
+
+    # Alert 11s later on controller clock -> allowed by controller clock!
+    clock_time += 6.0
+    assert engine.decide(a2) is not None
