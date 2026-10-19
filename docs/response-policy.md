@@ -51,13 +51,20 @@ Empirical testing on kind (Kubernetes v1.31 with kindnet v20241108 / modern_ebpf
    - Enforcement flapped in tests A2 and B1, cause unknown.
    - Consequently, the quarantine tier is **not implemented (dropped)**.
 3. **Deterministic Egress Restriction on Running Pods**:
-   - In contrast to quarantine, dynamic egress restriction (`rtm.tier=restrict`) on a running pod blocked new egress in 1 to 3 s in Test A1 and in 59/59 probes in S2 (and 60/60 in extended verification).
+   - In contrast to quarantine, dynamic egress restriction (`rtm.tier=restrict`) on a running pod blocked new egress in 1 to 3 s in Test A1 and in 60/60 probes in S2.
 4. **Startup Flapping on Pods Created with Restrict Labels**:
    - When a replacement pod is created with `rtm.tier=restrict` pre-set, a race condition during CNI interface provisioning permits a 0–12 second window of traffic leakage before network policies lock down. Running pods labeled dynamically achieve deterministic enforcement within 1–3 seconds.
 5. **In-Memory State**:
    - Decision engine history, deduplication timestamps, and action records reside entirely in-memory within the controller container. A controller pod restart resets history and counters.
 6. **Dropped Alert Metadata**:
    - The normalized alert contract ingested by the controller extracts pod name, container ID, rule ID, and command-line, but drops raw packet data such as dynamic destination IP and port numbers.
+7. **Escalation Suppression on Isolated Pods (Empirical Defect)**:
+   - In live testing, after a pod was isolated via `isolate_network` (triggered by `RTM-001` + `RTM-003`), executing a third distinct rule (`RTM-002 Sensitive file read`, hint `alert_only`) did **not** escalate to `kill_pod`. The pod remained running in namespace `shop`.
+   - *Root Cause*: Commit `c0c3de1` placed the isolation suppression check (`if "isolate_network" in taken and planned_action != "kill_pod": return None`) before the escalation threshold check (`if len(unique_rtms) >= 3`). Because `planned_action` from hint is `alert_only`, the controller drops the alert before evaluating multi-rule escalation.
+8. **Clock Domain Differences in Latency Metrics**:
+   - `alert_ts` is recorded on the Falco daemon clock (kernel monotonic / eBPF timestamp), whereas `received_ts` and `action_done_ts` are recorded on the controller's user-space clock.
+   - Cross-clock subtraction (`alert_to_action_s = action_done_ts - alert_sec`) can produce sub-millisecond artifacts or clock skew under host sleep/resume cycles.
+   - Internal controller execution overhead (`received_to_action_s = action_done_ts - received_ts`) reliably measures 20–44 ms from webhook ingestion to Kubernetes API mutation.
 
 ---
 
@@ -65,11 +72,13 @@ Empirical testing on kind (Kubernetes v1.31 with kindnet v20241108 / modern_ebpf
 
 ### Summary of Changes
 - Implements graduated response controller in `controller/engine/` listening to Falcosidekick webhook events.
-- Evaluates rules via hint mapping (`alert_only`, `isolate_network`, `kill_pod`) with 10s deduplication and 3-rule/300s escalation.
+- Evaluates rules via hint mapping (`alert_only`, `isolate_network`, `kill_pod`) with 10s deduplication and multi-rule escalation.
 - Enforces egress network isolation via `rtm-restrict` NetworkPolicy and pod deletion via CoreV1 API.
 - Implements strict safety guards: `DRY_RUN=true` by default, `rtm.enforce=true` opt-in label selector, and `shop` namespace containment.
+- Implements evaluation harness in `scripts/evaluate.sh` benchmarking `detect_only`, `always_delete`, and `graduated` strategies across 4 attack scenarios with dual-clock timing metrics (`alert_to_action_s` and `received_to_action_s`).
 
-### What Was NOT Tested
+### Known Issues & What Was NOT Tested
+- **Known Issue**: Escalation to `kill_pod` fails on pods that have already been isolated with `isolate_network` if the third rule has an `alert_only` hint (due to isolation suppression preceding the escalation check in commit `c0c3de1`).
 - `restrict` (`rtm.tier=restrict`) against established TCP connections.
 - Root cause of flapping observed during quarantine tests A2 and B1.
 - Ingress restriction against running pods.

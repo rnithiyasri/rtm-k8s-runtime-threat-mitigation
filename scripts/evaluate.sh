@@ -11,13 +11,21 @@ CSV_FILE="$REPO_DIR/docs/evaluation-results.csv"
 echo "=== Starting Evaluation (REPEATS=$REPEATS) ==="
 mkdir -p "$REPO_DIR/docs"
 
-# Initialize CSV header if not exists
-if [ ! -f "$CSV_FILE" ]; then
-  echo "strategy,scenario,run,pod,action,detection_s,containment_s,downtime_s,availability_pct,contained" > "$CSV_FILE"
+# If arguments given, use them as strategies; else default to all three
+if [ $# -gt 0 ]; then
+  STRATEGIES=("$@")
 else
-  # Ensure header is present
-  if ! grep -q "^strategy,scenario,run" "$CSV_FILE"; then
-    echo "strategy,scenario,run,pod,action,detection_s,containment_s,downtime_s,availability_pct,contained" > "$CSV_FILE"
+  STRATEGIES=("detect_only" "always_delete" "graduated")
+fi
+
+HEADER="strategy,scenario,run,pod,first_action,enforcement_action,detection_s,alert_to_action_s,received_to_action_s,downtime_s,availability_pct,contained"
+
+# Ensure CSV has correct header
+if [ ! -f "$CSV_FILE" ]; then
+  echo "$HEADER" > "$CSV_FILE"
+else
+  if ! head -n 1 "$CSV_FILE" | grep -q "first_action"; then
+    echo "$HEADER" > "$CSV_FILE"
   fi
 fi
 
@@ -51,7 +59,6 @@ EOF
   kubectl wait --namespace=rtm-tools --for=condition=Ready pod/avail-probe --timeout=30s
 fi
 
-STRATEGIES=("detect_only" "always_delete" "graduated")
 SCENARIOS=("E1" "E2" "E3" "E4")
 
 for strat in "${STRATEGIES[@]}"; do
@@ -148,12 +155,15 @@ run_num = "$r"
 contained = "$contained"
 
 controller_logs = """$controller_logs"""
-action = "none"
+first_action = "none"
+enforcement_action = ""
 detection_s = ""
-containment_s = ""
+alert_to_action_s = ""
+received_to_action_s = ""
 
-earliest_d = None
-earliest_ts = None
+first_d = None
+first_alert_sec = None
+enforce_d = None
 
 for line in controller_logs.strip().split("\n"):
     if '{"strategy":' in line and victim_pod in line:
@@ -163,24 +173,34 @@ for line in controller_logs.strip().split("\n"):
             if alert_ts_str:
                 dt = datetime.fromisoformat(alert_ts_str.rstrip("Z"))
                 alert_sec = dt.timestamp()
-                if alert_sec >= t_attack - 2.0:
-                    if earliest_ts is None or alert_sec < earliest_ts:
-                        earliest_ts = alert_sec
-                        earliest_d = d
+                rec_ts = d.get("received_ts", 0)
+                if alert_sec >= t_attack - 5.0 or rec_ts >= t_attack - 2.0:
+                    if first_d is None:
+                        first_d = d
+                        first_alert_sec = alert_sec
+                    if d.get("action") != "alert_only" and enforce_d is None:
+                        enforce_d = d
         except Exception:
             pass
 
-if earliest_d:
-    action = earliest_d.get("action", "none")
-    action_done_ts = earliest_d.get("action_done_ts")
-    is_dry = earliest_d.get("dry_run", True)
-    
-    diff = earliest_ts - t_attack
+if first_d:
+    first_action = first_d.get("action", "none")
+    diff = first_alert_sec - t_attack
     detection_s = f"{max(0.001, diff):.3f}"
+
+if enforce_d:
+    enforcement_action = enforce_d.get("action", "")
+    enforce_alert_str = enforce_d.get("alert_ts", "")
+    enforce_action_done = enforce_d.get("action_done_ts")
+    enforce_received = enforce_d.get("received_ts")
     
-    if not is_dry and action in ("isolate_network", "kill_pod") and action_done_ts:
-        c_diff = action_done_ts - earliest_ts
-        containment_s = f"{max(0.001, c_diff):.3f}"
+    if enforce_alert_str and enforce_action_done:
+        e_dt = datetime.fromisoformat(enforce_alert_str.rstrip("Z"))
+        e_sec = e_dt.timestamp()
+        alert_to_action_s = f"{max(0.001, enforce_action_done - e_sec):.3f}"
+        
+    if enforce_received and enforce_action_done:
+        received_to_action_s = f"{max(0.001, enforce_action_done - enforce_received):.3f}"
 
 probe_logs = """$probe_logs"""
 failures = 0
@@ -206,7 +226,7 @@ if total_probes > 0:
 else:
     avail_pct = "100.0"
 
-csv_row = f"{strategy},{scenario},{run_num},{victim_pod},{action},{detection_s},{containment_s},{downtime_s},{avail_pct},{contained}"
+csv_row = f"{strategy},{scenario},{run_num},{victim_pod},{first_action},{enforcement_action},{detection_s},{alert_to_action_s},{received_to_action_s},{downtime_s},{avail_pct},{contained}"
 print(csv_row)
 EOF
 
