@@ -1,12 +1,15 @@
-# RTM Response Engine Policy (Phase 2)
+# RTM Response Policy (Phase 2)
 
-This document describes the design, response mappings, escalation rules, safety guards, and empirical limitations of the Runtime Threat Mitigation (RTM) Graduated Response Engine in Kubernetes.
+This document describes the **actions, escalation rules, safety guards, and known
+limitations** of the runtime response engine deployed in Phase 2.
 
 ---
 
 ## 1. Response Hint-to-Action Mapping
 
-Falco rules in Phase 1.5 tag each alert with a `response_<hint>` tag. The response controller maps these hints directly to Kubernetes actions without hardcoding rule names:
+Falco rules in Phase 1.5 tag each alert with a `response_<hint>` tag. The response
+controller maps these hints directly to Kubernetes actions without hardcoding rule
+names:
 
 | Response Hint | Action | Controller Mechanism | Intended Threat Class |
 |---|---|---|---|
@@ -18,11 +21,23 @@ Falco rules in Phase 1.5 tag each alert with a `response_<hint>` tag. The respon
 
 ## 2. Escalation & Deduplication Rules
 
-- **Multi-Rule Escalation**: If a pod triggers **3 or more DIFFERENT `rtm_id` rules within a rolling 300-second window**, the controller escalates the action to `kill_pod` (deleting the pod), regardless of whether the individual alerts were `alert_only` or `isolate_network`.
-- **10-Second Deduplication**: Consecutive alerts with the identical `(pod, rtm_id)` tuple within 10 seconds of each other are deduplicated and ignored to prevent alert flooding.
-- **Action Non-Repetition**: The controller never repeats an action already executed on a pod:
-  - If a pod has already been patched with `isolate_network`, subsequent isolate or alert-only alerts do not re-patch or prematurely delete the pod under inspection.
-  - If a pod has already been deleted (`kill_pod`), subsequent alerts during its termination phase are suppressed.
+- **Multi-Rule Escalation**: If a pod triggers **3 or more DIFFERENT `rtm_id` rules
+  within a rolling 300-second window**, the controller escalates the action to
+  `kill_pod` (deleting the pod), regardless of whether the individual alerts were
+  `alert_only` or `isolate_network`. The escalation check runs **before** the
+  isolation-suppression guard so that already-isolated pods correctly escalate on a
+  third distinct rule (fix: commit `637e54b`).
+- **10-Second Deduplication**: Consecutive alerts with the identical `(pod, rtm_id)`
+  tuple within 10 seconds of each other are deduplicated and ignored to prevent alert
+  flooding. Both the deduplication window and the 300-second rolling window use the
+  **controller's own receive clock** (`time.time()`), not `alert_ts` from Falco, so
+  they are immune to Falco clock skew (commit `14367df`).
+- **Action Non-Repetition**: The controller never repeats an action already executed:
+  - If a pod has already been patched with `isolate_network`, subsequent isolate or
+    alert-only alerts do not re-patch. Escalation to `kill_pod` still fires on a
+    **third distinct rule**.
+  - If a pod has already been deleted (`kill_pod`), all subsequent alerts are
+    suppressed.
 
 ---
 
@@ -30,56 +45,106 @@ Falco rules in Phase 1.5 tag each alert with a `response_<hint>` tag. The respon
 
 The response engine operates under strict defense-in-depth safety controls:
 
-1. **Dry-Run by Default (`DRY_RUN=true`)**: The controller defaults to dry-run mode. When dry-run is active, it evaluates the decision and outputs `WOULD <action> pod <name>` in structured JSON logs without executing any Kubernetes mutations.
-2. **Opt-In Workload Label Selector (`ENFORCE_LABEL_SELECTOR=rtm.enforce=true`)**: Even when `DRY_RUN=false` is set globally, the controller **only** acts on pods carrying the explicit label `rtm.enforce: "true"`. Unlabeled pods (such as production shop services: `auth-service`, `frontend`, `order-service`, `payment-service`, `reviews-service`) remain strictly dry-run (`WOULD ...`), preventing accidental outages.
-3. **Strict Namespace Boundary**: The controller only evaluates alerts and executes actions within namespace `shop`. Alerts from `kube-system`, `default`, or `rtm-tools` are filtered out.
-4. **Isolated Namespace Execution**: The controller runs in namespace `rtm-system` under a dedicated ServiceAccount `rtm-controller` with least-privilege RBAC (Role in `shop` granting `get`, `list`, `patch`, `delete` on `pods` only; no `ClusterRole`). Running in `rtm-system` prevents the controller from triggering Falco rules (e.g. `RTM-003`) on itself.
+1. **Dry-Run by Default (`DRY_RUN=true`)**: The controller defaults to dry-run mode.
+   When dry-run is active, it evaluates the decision and outputs `WOULD <action> pod
+   <name>` in structured JSON logs without executing any Kubernetes mutations.
+2. **Opt-In Workload Label Selector (`ENFORCE_LABEL_SELECTOR=rtm.enforce=true`)**:
+   Even when `DRY_RUN=false` is set globally, the controller **only** acts on pods
+   carrying the explicit label `rtm.enforce: "true"`. Unlabeled pods (production shop
+   services) remain strictly dry-run, preventing accidental outages.
+3. **Strict Namespace Boundary**: The controller only evaluates alerts and executes
+   actions within namespace `shop`. Alerts from `kube-system`, `default`, or
+   `rtm-tools` are filtered out.
+4. **Isolated Namespace Execution**: The controller runs in `rtm-system` under a
+   dedicated `ServiceAccount rtm-controller` with least-privilege RBAC (Role in `shop`
+   granting `get`, `list`, `patch`, `delete` on `pods` only; no `ClusterRole`). Running
+   in `rtm-system` prevents the controller from triggering Falco rules on itself.
 
 ---
 
 ## 4. Measured Limitations & Empirical Findings
 
-Empirical testing on kind (Kubernetes v1.31 with kindnet v20241108 / modern_ebpf Falco) revealed several critical runtime characteristics:
+Empirical testing on kind (Kubernetes v1.31, kindnet v20241108, modern_ebpf Falco):
 
 1. **Established Connections Survived QUARANTINE Label**:
-   - Applying `rtm.tier=quarantine` to a running pod did NOT sever existing established TCP sockets: active client and server connections survived (155/155 and 133/133 pings delivered across 120 s).
-   - Egress restriction (`rtm.tier=restrict`) was **NOT tested against established connections**.
-   - *Implication*: NetworkPolicy alone cannot be assumed to terminate an already established attacker C2 reverse shell. Terminating interactive sessions requires pod deletion (`kill_pod`).
+   - Applying `rtm.tier=quarantine` to a running pod did NOT sever existing established
+     TCP sockets (155/155 and 133/133 pings delivered across 120 s).
+   - Egress restriction (`rtm.tier=restrict`) was NOT tested against established
+     connections.
+   - *Implication*: NetworkPolicy alone cannot terminate an established attacker C2
+     reverse shell. Terminating interactive sessions requires pod deletion (`kill_pod`).
 2. **Flapping and Asymmetric Enforcement in Quarantine Tests (B1 & B2)**:
-   - In Test B1: new outbound connections from the labelled client were blocked for about 140 s, then succeeded again at t+153 s.
-   - In Test B2: new inbound connections to the labelled server were NOT blocked in any of 12 samples.
-   - Enforcement flapped in tests A2 and B1, cause unknown.
-   - Consequently, the quarantine tier is **not implemented (dropped)**.
+   - New outbound connections from the labelled client were blocked for ~140 s, then
+     succeeded again at t+153 s; inbound connections to the labelled server were never
+     blocked.
+   - Consequently the quarantine tier is **not implemented (dropped)**.
 3. **Deterministic Egress Restriction on Running Pods**:
-   - In contrast to quarantine, dynamic egress restriction (`rtm.tier=restrict`) on a running pod blocked new egress in 1 to 3 s in Test A1 and in 60/60 probes in S2.
+   - Dynamic egress restriction (`rtm.tier=restrict`) on a running pod blocked new
+     egress in 1-3 s and held across 60/60 probes.
 4. **Startup Flapping on Pods Created with Restrict Labels**:
-   - When a replacement pod is created with `rtm.tier=restrict` pre-set, a race condition during CNI interface provisioning permits a 0–12 second window of traffic leakage before network policies lock down. Running pods labeled dynamically achieve deterministic enforcement within 1–3 seconds.
-5. **In-Memory State**:
-   - Decision engine history, deduplication timestamps, and action records reside entirely in-memory within the controller container. A controller pod restart resets history and counters.
-6. **Dropped Alert Metadata**:
-   - The normalized alert contract ingested by the controller extracts pod name, container ID, rule ID, and command-line, but drops raw packet data such as dynamic destination IP and port numbers.
-7. **Escalation Suppression on Isolated Pods (Empirical Defect)**:
-   - In live testing, after a pod was isolated via `isolate_network` (triggered by `RTM-001` + `RTM-003`), executing a third distinct rule (`RTM-002 Sensitive file read`, hint `alert_only`) did **not** escalate to `kill_pod`. The pod remained running in namespace `shop`.
-   - *Root Cause*: Commit `c0c3de1` placed the isolation suppression check (`if "isolate_network" in taken and planned_action != "kill_pod": return None`) before the escalation threshold check (`if len(unique_rtms) >= 3`). Because `planned_action` from hint is `alert_only`, the controller drops the alert before evaluating multi-rule escalation.
-8. **Clock Domain Differences in Latency Metrics**:
-   - `alert_ts` is recorded on the Falco daemon clock (kernel monotonic / eBPF timestamp), whereas `received_ts` and `action_done_ts` are recorded on the controller's user-space clock.
-   - Cross-clock subtraction (`alert_to_action_s = action_done_ts - alert_sec`) can produce sub-millisecond artifacts or clock skew under host sleep/resume cycles.
-   - Internal controller execution overhead (`received_to_action_s = action_done_ts - received_ts`) reliably measures 20–44 ms from webhook ingestion to Kubernetes API mutation.
+   - A replacement pod created with `rtm.tier=restrict` pre-set has a 0-12 s window of
+     traffic leakage during CNI provisioning. Running pods labelled dynamically achieve
+     deterministic enforcement within 1-3 s.
+5. **Delete Downtime (~8-9 s)**:
+   - Pod deletion and single-replica ReplicaSet restart imposes ~8-9 s of service
+     downtime. This is primarily the pod scheduling and container start time, not
+     controller overhead. Availability in `always_delete` strategy drops to ~67-71%.
+6. **In-Memory State**:
+   - Decision engine history (deduplication timestamps, action records) resides entirely
+     in-memory. A controller pod restart resets all state.
+7. **Dropped Alert Metadata**:
+   - The normalized alert contract extracts pod name, container ID, rule ID, and
+     command-line, but drops raw packet data (destination IP/port).
+8. **Escalation Suppression Bug (Fixed in commit `637e54b`)**:
+   - *Original defect*: In commit `c0c3de1`, the isolation suppression check ran
+     **before** the 3-rule escalation threshold, so isolated pods never escalated on
+     `alert_only`-hint rules.
+   - *Fix*: The multi-rule escalation check (`len(unique_rtms) >= 3`) now runs first.
+     Live test confirmed: RTM-001 -> isolate_network, RTM-003 (dup, suppressed),
+     RTM-002 -> kill_pod with reason `escalation_3_different_rules`.
+9. **Falco Clock Skew After Host Suspend/Resume (WSL2)**:
+   - `alert_ts` in Falco alerts uses the kernel eBPF monotonic clock, which freezes
+     during WSL2 VM suspend. After resume, `alert_ts` can lag wall time by hours
+     (observed offset: ~45,560 s / ~12.66 h after a laptop sleep cycle).
+   - The controller uses `time.time()` (controller receive clock) for all deduplication
+     and window arithmetic; `alert_ts` is retained in logs only for traceability.
+   - Evaluation metrics (`attack_to_received_s`, `received_to_action_s`,
+     `attack_to_action_s`) are all single-clock (WSL host clock vs controller
+     `time.time()`) to eliminate cross-clock artifacts.
 
 ---
 
-## 5. Pull Request Description Draft
+## 5. Pull Request Description
 
-### Summary of Changes
-- Implements graduated response controller in `controller/engine/` listening to Falcosidekick webhook events.
-- Evaluates rules via hint mapping (`alert_only`, `isolate_network`, `kill_pod`) with 10s deduplication and multi-rule escalation.
-- Enforces egress network isolation via `rtm-restrict` NetworkPolicy and pod deletion via CoreV1 API.
-- Implements strict safety guards: `DRY_RUN=true` by default, `rtm.enforce=true` opt-in label selector, and `shop` namespace containment.
-- Implements evaluation harness in `scripts/evaluate.sh` benchmarking `detect_only`, `always_delete`, and `graduated` strategies across 4 attack scenarios with dual-clock timing metrics (`alert_to_action_s` and `received_to_action_s`).
+### Phase 2 - Graduated Runtime Response Engine
 
-### Known Issues & What Was NOT Tested
-- **Known Issue**: Escalation to `kill_pod` fails on pods that have already been isolated with `isolate_network` if the third rule has an `alert_only` hint (due to isolation suppression preceding the escalation check in commit `c0c3de1`).
-- `restrict` (`rtm.tier=restrict`) against established TCP connections.
-- Root cause of flapping observed during quarantine tests A2 and B1.
+**What this PR adds:**
+
+- `controller/engine/decision.py`: Graduated decision engine with hint mapping,
+  10 s deduplication, 300 s multi-rule escalation, and action non-repetition. All
+  timing state uses the controller receive clock; `alert_ts` is log-only.
+- `controller/engine/main.py`: FastAPI webhook listener; receives Falcosidekick JSON,
+  normalises fields, calls decision engine, executes K8s mutations (label patch /
+  pod delete) guarded by `DRY_RUN` and `rtm.enforce=true` selector.
+- `k8s/`: NetworkPolicy `rtm-restrict`, RBAC Role/RoleBinding, Deployment, Service,
+  and ServiceAccount manifests for the controller.
+- `scripts/evaluate.sh`: Evaluation harness running configurable strategies
+  (`alert_only`, `graduated`, `always_delete`) across 4 attack scenarios (E1-E4)
+  with single-clock metrics and preflight Falco clock drift check.
+- `docs/evaluation-results.csv` + `docs/evaluation-summary.md`: Empirical results
+  from 36-run evaluation (REPEATS=3, 3 strategies x 4 scenarios).
+- `tests/test_decision.py`: 22 unit tests covering hint mapping, deduplication,
+  escalation (including escalation-after-isolation), and controller-clock isolation.
+
+**Key design decisions:**
+
+- Escalation check runs **before** isolation suppression (fixes commit `c0c3de1` bug).
+- All window/dedupe arithmetic uses controller clock only - immune to Falco WSL2 skew.
+- `DRY_RUN=true` default + `rtm.enforce=true` label gate - production pods safe.
+
+**What was NOT tested:**
+
+- `restrict` label against already-established TCP connections.
+- Multi-replica controller state sync (controller is single-replica, in-memory state).
+- Root cause of NetworkPolicy enforcement flapping observed in quarantine tests.
 - Ingress restriction against running pods.
-- Multi-replica controller state synchronization (controller is currently single-replica in-memory).
