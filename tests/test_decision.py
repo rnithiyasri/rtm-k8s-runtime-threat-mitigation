@@ -63,7 +63,7 @@ def test_escalation_three_different_rules():
 
 
 def test_two_rules_do_not_escalate():
-    """Verify 2 rules on one pod do not escalate."""
+    """(d) Verify two distinct rules never escalate."""
     engine = DecisionEngine()
     d1 = engine.decide(make_alert(rtm_id="RTM-001", hint="alert_only", pod="p-two"), now=100.0)
     assert d1["action"] == "alert_only"
@@ -128,25 +128,68 @@ def test_missing_pod():
     assert engine.decide(make_alert(pod="")) is None
 
 
-def test_never_repeat_action():
-    """Verify that disruptive actions (isolate_network, kill_pod) are never repeated on the same pod."""
-    engine = DecisionEngine()
-    
-    # 1. isolate_network taken on pod
-    d1 = engine.decide(make_alert(rtm_id="RTM-003", hint="isolate_network", pod="p-rep"), now=10.0)
+def test_escalation_after_isolate_network_distinct_rule():
+    """(a) restrict already taken, then a 3rd DISTINCT rule with hint alert_only -> kill_pod."""
+    clock_time = 5000.0
+    engine = DecisionEngine(clock=lambda: clock_time)
+
+    # 1. RTM-001 (shell spawned, hint alert_only)
+    d1 = engine.decide(make_alert(rtm_id="RTM-001", hint="alert_only", pod="p-esc-iso"))
+    assert d1["action"] == "alert_only"
+
+    # 2. RTM-003 (token read, hint isolate_network)
+    clock_time += 1.0
+    d2 = engine.decide(make_alert(rtm_id="RTM-003", hint="isolate_network", pod="p-esc-iso"))
+    assert d2["action"] == "isolate_network"
+
+    # 3. RTM-002 (sensitive file read, hint alert_only) -> MUST escalate to kill_pod!
+    clock_time += 12.0
+    d3 = engine.decide(make_alert(rtm_id="RTM-002", hint="alert_only", pod="p-esc-iso"))
+    assert d3 is not None
+    assert d3["action"] == "kill_pod"
+    assert d3["reason"] == "escalation_3_different_rules"
+    assert d3["rtm_ids"] == ["RTM-001", "RTM-002", "RTM-003"]
+
+
+def test_isolate_network_repeat_rule_suppressed():
+    """(b) restrict taken, then a repeat of an already-seen rule -> None."""
+    clock_time = 6000.0
+    engine = DecisionEngine(clock=lambda: clock_time)
+
+    # 1. RTM-003 -> isolate_network
+    d1 = engine.decide(make_alert(rtm_id="RTM-003", hint="isolate_network", pod="p-rep-iso"))
     assert d1["action"] == "isolate_network"
 
-    # Another alert with isolate_network for the same pod -> suppressed
-    d2 = engine.decide(make_alert(rtm_id="RTM-006", hint="isolate_network", pod="p-rep"), now=25.0)
+    # 2. Repeat of RTM-003 after dedupe interval (15s) -> suppressed because isolate_network already taken
+    clock_time += 15.0
+    d2 = engine.decide(make_alert(rtm_id="RTM-003", hint="isolate_network", pod="p-rep-iso"))
     assert d2 is None
 
-    # kill_pod on the same pod is allowed
-    d3 = engine.decide(make_alert(rtm_id="RTM-005", hint="kill_pod", pod="p-rep"), now=30.0)
-    assert d3["action"] == "kill_pod"
+    # 3. Add RTM-001 (total rules = 2)
+    clock_time += 5.0
+    d3 = engine.decide(make_alert(rtm_id="RTM-001", hint="alert_only", pod="p-rep-iso"))
+    # suppressed because isolate_network already taken and len(unique_rtms) == 2 (< 3)
+    assert d3 is None
 
-    # Further actions on the killed pod are suppressed
-    d4 = engine.decide(make_alert(rtm_id="RTM-007", hint="kill_pod", pod="p-rep"), now=45.0)
+    # 4. Repeat of RTM-001 after dedupe interval -> still suppressed
+    clock_time += 15.0
+    d4 = engine.decide(make_alert(rtm_id="RTM-001", hint="alert_only", pod="p-rep-iso"))
     assert d4 is None
+
+
+def test_after_kill_pod_further_alerts_suppressed():
+    """(c) after kill_pod taken, further alerts -> None."""
+    engine = DecisionEngine()
+
+    d1 = engine.decide(make_alert(rtm_id="RTM-005", hint="kill_pod", pod="p-kill-supp"), now=10.0)
+    assert d1["action"] == "kill_pod"
+
+    # Any subsequent alert, even with different rule or higher hint -> None
+    d2 = engine.decide(make_alert(rtm_id="RTM-007", hint="kill_pod", pod="p-kill-supp"), now=25.0)
+    assert d2 is None
+
+    d3 = engine.decide(make_alert(rtm_id="RTM-002", hint="alert_only", pod="p-kill-supp"), now=30.0)
+    assert d3 is None
 
 
 def test_strategy_always_delete():

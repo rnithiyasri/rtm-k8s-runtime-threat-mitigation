@@ -121,14 +121,14 @@ class DecisionEngine:
                 planned_action = "alert_only"
                 reason = "hint_alert_only"
 
-            # If isolate_network was already taken, suppress repeat isolate or alert_only actions
-            if "isolate_network" in taken and planned_action != "kill_pod":
-                return None
-
             # Escalation rule: 3 or more DIFFERENT rtm_ids on one pod within 300 s -> delete it
             if len(unique_rtms) >= 3:
                 planned_action = "kill_pod"
                 reason = "escalation_3_different_rules"
+
+            # If isolate_network was already taken, suppress repeat isolate or alert_only actions
+            if "isolate_network" in taken and planned_action != "kill_pod":
+                return None
 
             if planned_action in ("isolate_network", "kill_pod"):
                 if planned_action in taken:
