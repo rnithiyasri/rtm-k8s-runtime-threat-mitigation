@@ -1,129 +1,161 @@
 # RTM — Runtime Threat Mitigation in Kubernetes
 
-Detect malicious container behaviour at the syscall level using **Falco
-(modern eBPF / CO-RE)** on a demo e-commerce application running in Kind.
-Alerts are routed through **Falcosidekick** to a **stub-receiver** that
-normalises and stores them for a future response engine.
+Autonomous cloud-native runtime security for Kubernetes. Detects malicious container behaviour at the kernel system call level using **Falco (modern eBPF / CO-RE)** and executes risk-proportionate, low-latency mitigation actions via an autonomous **Response Engine**.
+
+---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Kind cluster: rtm-k8s-cluster  (1 control-plane + 1 worker)   │
-│                                                                 │
-│  namespace: shop                                                │
-│  ┌──────────┐ ┌──────┐ ┌─────────┐ ┌───────┐ ┌──────────┐     │
-│  │ frontend │ │ auth │ │ reviews │ │ order │ │ payment  │     │
-│  └──────────┘ └──────┘ └─────────┘ └───────┘ └──────────┘     │
-│        │           │         │          │           │           │
-│        └───────────┴─────────┴──────────┴───────────┘          │
-│                          syscalls                               │
-│                             │                                   │
-│  namespace: falco           ▼                                   │
-│  ┌──────────────────┐   ┌──────────────────┐                   │
-│  │  Falco DaemonSet │──▶│  Falcosidekick   │                   │
-│  │  (modern_ebpf)   │   │  chart 0.14.0    │                   │
-│  │  chart 9.2.0     │   └────────┬─────────┘                   │
-│  └──────────────────┘            │ POST /alerts                │
-│                                  ▼                              │
-│                       ┌─────────────────────┐                  │
-│                       │   stub-receiver     │                  │
-│                       │   GET /alerts/recent│                  │
-│                       │   (shop namespace)  │                  │
-│                       └─────────────────────┘                  │
-└─────────────────────────────────────────────────────────────────┘
++---------------------------------------------------------------------------------------------------+
+| Kind Cluster: rtm-k8s-cluster (1 Control-Plane + 1 Worker Node)                                   |
+|                                                                                                   |
+|  Namespace: shop (Monitored Workloads - Opt-in: rtm.enforce=true)                                 |
+|  +---------------------------------------------------------------------------------------------+  |
+|  | [frontend]   [auth]   [reviews]   [order]   [payment]   [victim-deployment]                 |  |
+|  +---------------------------------------------------------------------------------------------+  |
+|                                    | (Containerized Syscalls: execve, openat, socket, connect)     |
+|                                    v                                                              |
+|  Namespace: falco (Kernel-Level Observability)                                                    |
+|  +-------------------------------------+      +------------------------------------------------+  |
+|  | Falco DaemonSet (modern_ebpf engine)| ---> | Falcosidekick (Webhook Router)                 |  |
+|  | - Evaluates rules RTM-001 - RTM-008 |      | - Dispatches JSON alert payloads               |  |
+|  +-------------------------------------+      +------------------------------------------------+  |
+|                                                              | POST http://rtm-controller/alerts   |
+|                                                              v                                    |
+|  Namespace: shop (Autonomous Response & Mitigation Plane)                                         |
+|  +---------------------------------------------------------------------------------------------+  |
+|  | RTM Response Engine Controller (FastAPI + Kubernetes Client SDK)                             |  |
+|  |  - In-Memory Deduplication: (rtm_id, container_id, timestamp)                                |  |
+|  |  - Configurable Strategies: [detect_only | graduated | always_delete]                         |  |
+|  |  - Enforcement Actions:                                                                     |  |
+|  |       * alert_only      --> Telemetry & audit logging                                        |  |
+|  |       * isolate_network --> Dynamic NetworkPolicy injection (Ingress/Egress drop)             |  |
+|  |       * kill_pod        --> Immediate pod termination (client.CoreV1Api, grace_period=0)    |  |
+|  +---------------------------------------------------------------------------------------------+  |
++---------------------------------------------------------------------------------------------------+
 ```
+
+---
 
 ## Phase Roadmap
 
 | Phase | Description | Status |
-|-------|-------------|--------|
-| 0 | Kind cluster + demo app (`shop` namespace, 5 FastAPI services) | ✅ Done |
-| 1 | Falco baseline: Helm install, modern_ebpf, Falcosidekick, stub-receiver | ✅ Done |
-| 1.5 | Custom RTM rules (RTM-001–RTM-008), attack sim, verify, docs | ✅ Done |
-| 2 | Response engine (kill-pod / isolate-network) | ✅ Done |
-| 3 | Policy engine (Kyverno integration) | ⏸ Out of Scope |
-| 5 | Empirical evaluation (detect_only vs always_delete vs graduated) | ✅ Done |
+|---|---|---|
+| **0** | Kind cluster + demo microservices (`shop` namespace, 5 FastAPI services) | Completed |
+| **1** | Falco baseline: Helm 9.2.0, `modern_ebpf` driver, Falcosidekick, stub-receiver | Completed |
+| **1.5** | Custom RTM rules (RTM-001–RTM-008), attack simulation harness, rule verification | Completed |
+| **2** | Autonomous Response Engine (`controller/engine/`), graduated strategies, 14 unit tests | Completed |
+| **2.5 / 5** | Empirical evaluation: 36-run latency benchmark, multi-replica resilience, evaluation audit | Completed |
+| **3** | Policy Engine (Kyverno admission control integration) | Out of Scope / Planned Future |
+
+---
 
 ## Prerequisites
 
-| Tool | Version |
-|------|---------|
-| Docker Desktop (WSL2 backend, **containerd image store OFF**) | 4.x |
-| kind | v0.24.0 |
-| kubectl | v1.34+ |
-| helm | v4.x |
-| git + gh | any recent |
-| Python | 3.11+ |
+| Tool | Version | Notes |
+|---|---|---|
+| **Docker Desktop** | 4.x+ | WSL2 backend; disable "Use containerd for pulling and storing images" (KI-007) |
+| **Kind** | v0.24.0+ | Multi-node local Kubernetes cluster |
+| **kubectl** | v1.31+ | Cluster administration CLI |
+| **Helm** | v3.12+ | Package manager for Falco & Falcosidekick |
+| **Python** | 3.11+ | Controller development & pytest test suite |
 
-> WSL2 note: disable "Use containerd for pulling and storing images" in Docker
-> Desktop → Settings → General, otherwise `kindest/node` image extraction
-> fails. See `docs/known-issues.md` KI-007.
+---
 
 ## Quick Start
 
+### 1. Provision Cluster & Microservices
 ```bash
-# 1. Clone
+# Clone the repository
 git clone https://github.com/rnithiyasri/rtm-k8s-runtime-threat-mitigation.git
 cd rtm-k8s-runtime-threat-mitigation
 
-# 2. Create Kind cluster and deploy demo app
+# Create Kind cluster and deploy the shop microservices
 bash scripts/setup-cluster.sh
+```
 
-# 3. Install Falco + Falcosidekick + stub-receiver
+### 2. Deploy Falco & Telemetry Pipeline
+```bash
+# Install Falco with modern_ebpf driver + Falcosidekick + hostPID patch
 bash scripts/install-falco.sh
+```
 
-# 4. Verify all RTM rules fire correctly
+### 3. Verify Custom Threat Detection Rules
+```bash
+# Run benign attack simulations against all custom RTM rules
 bash scripts/verify-rtm-rules.sh
 
-# 5. (Optional) Run attack simulations manually
+# Or simulate all attacks manually
 bash scripts/simulate-attacks.sh all
-
-# 6. (Optional) False-positive check
-# In one terminal: kubectl port-forward -n shop svc/stub-receiver 18765:8000
-# In another:      bash scripts/normal-traffic.sh
 ```
+
+### 4. Run Controller Automated Unit Tests
+```bash
+# Activate virtual environment and run the test suite
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r controller/engine/requirements.txt pytest
+python -m pytest tests/test_decision.py -v -p no:cacheprovider
+```
+
+---
+
+## Controller Configuration & Strategies
+
+The Phase 2 response engine supports configurable environment variables:
+
+```bash
+STRATEGY=graduated          # Options: detect_only | graduated | always_delete
+DRY_RUN=true                # true = observe only; false = execute live enforcement
+ENFORCE_LABEL_SELECTOR=rtm.enforce=true # Pods must have this label to allow enforcement
+```
+
+### Response Actions:
+- **`alert_only`**: Records threat telemetry and logs metrics without modifying workloads.
+- **`isolate_network`**: Injects a targeted Kubernetes `NetworkPolicy` blocking pod egress while preserving 100% service availability and zero downtime.
+- **`kill_pod`**: Executes rapid pod eviction (`delete_namespaced_pod` with 0s grace period) for critical threats.
+
+---
 
 ## Repository Layout
 
 ```
-cluster/                      Kind cluster config
+cluster/                      Kind cluster configuration (1 CP + 1 Worker)
 manifests/
-  demo-app/                   FastAPI service source + K8s manifests
-  falco/                      Falco Helm values, custom rules, hostPID patch
-  stub-receiver/              Stub-receiver K8s Deployment + Service
+  demo-app/                   FastAPI microservices source + K8s Deployment manifests
+  falco/                      Falco Helm values, custom RTM rules, hostPID patch
+  stub-receiver/              Initial telemetry receiver manifests
 controller/
+  engine/                     Phase 2 Response Engine source (main.py, decision.py)
   stub-receiver/              FastAPI stub-receiver source
 scripts/
-  setup-cluster.sh            Create cluster, build images, deploy shop app
-  install-falco.sh            Install Falco + Falcosidekick + stub-receiver
-  simulate-attacks.sh         Benign attack simulations for all RTM rules
-  verify-rtm-rules.sh         PASS/FAIL verification table
-  normal-traffic.sh           False-positive check (2 min normal traffic)
+  setup-cluster.sh            Provisions Kind cluster & deploys shop microservices
+  install-falco.sh            Installs Falco modern_ebpf, Falcosidekick & hostPID patch
+  simulate-attacks.sh         Simulates benign MITRE ATT&CK container threats
+  verify-rtm-rules.sh         Executes automated detection verification suite
+  normal-traffic.sh           Simulates benign traffic for false-positive validation
+  evaluate.sh                 Automated 36-run latency, availability & containment benchmark
 tests/
-  test_stub_receiver.py       pytest unit tests (no cluster needed)
+  test_decision.py            Automated unit tests for response logic & escalation (14 tests)
+  test_stub_receiver.py       Unit tests for alert receiver normalization
 docs/
-  rtm-custom-rules.md         Threat model, how to add/validate rules
-  alert-schema.md             Normalized alert JSON contract for Phase 2
-  known-issues.md             WSL2 quirks, duplicate alerts, etc.
+  evaluation-summary.md       Scientific evaluation audit, benchmark tables & data notes
+  evaluation-results.csv      Raw 36-run benchmark measurements
+  rtm-custom-rules.md         Documentation for rules RTM-001 through RTM-008
+  response-policy.md          Policy escalation state machine & decision specification
+  known-issues.md             WSL2 quirks, BPF iterators, Kind ring buffer artifacts
+  PROJECT_REVIEW_STATUS_REPORT.md  Standardized project review status report
+  RESEARCH_PROJECT_REPORT.md       Academic project report (SSN College format)
+  PROJECT_COMPREHENSIVE_SUMMARY.md Complete team reference documentation
 ```
 
-## Running Tests
+---
 
-```bash
-python3 -m venv .venv
-.venv/bin/pip install fastapi uvicorn pytest httpx
-.venv/bin/pytest tests/ -v
-```
+## Key Findings & Design Decisions
 
-## Key Design Decisions
-
-- **modern_ebpf driver**: no kernel headers or module compilation needed; works
-  on WSL2 kernel 6.6.x with BTF/vmlinux present.
-- **rule_matching: all**: allows multiple RTM rules to fire on the same event
-  (e.g., RTM-001 + RTM-007 on a reverse-shell exec). Causes duplicate alerts
-  per event — see `docs/known-issues.md` KI-002 and KI-004.
-- **response_hint tag**: each rule carries `response_alert_only`, `kill_pod`,
-  or `isolate_network` so a Phase 2 engine can act without parsing rule names.
-- **Stub receiver ring buffer**: last 200 RTM alerts kept in memory at
-  `GET /alerts/recent`. Non-RTM alerts are logged only.
+- **modern_ebpf (CO-RE)**: Eliminates kernel header dependencies and host compilation; verified clock offset of `0.0000 s`.
+- **Negligible Controller Latency**: Controller decision processing (`received_to_action_s`) consistently measures **18 ms to 45 ms**.
+- **Graduated Containment Preserves Availability**: Isolating network egress on moderate threats maintains **100.0% availability with 0.0 s downtime**, avoiding the ~8–9 s disruption of single-replica pod terminations.
+- **Multi-Replica Resilience**: In 2-replica deployments, the service sustains pod terminations with **100% continuous availability and zero downtime**, confirming that pod restart delays are infrastructure scheduling characteristics rather than controller overhead.
+- **Controller-Clock Deduplication**: In-memory state machine deduplicates alerts on `(rtm_id, container_id, timestamp)` tuples, eliminating single-host Kind eBPF ring buffer duplicate alerts.
