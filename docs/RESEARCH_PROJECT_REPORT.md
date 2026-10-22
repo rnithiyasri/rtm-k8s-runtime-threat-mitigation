@@ -20,10 +20,10 @@
 
 ### Guided By:
 
-**[GUIDE NAME]**  
-Designation, IT.  
-Department of Information Technology  
-Sri Sivasubramaniya Nadar College of Engineering  
+**[GUIDE NAME]**
+Designation, IT.
+Department of Information Technology
+Sri Sivasubramaniya Nadar College of Engineering
 
 **Academic Year: 2026–2027**
 
@@ -48,9 +48,9 @@ Sri Sivasubramaniya Nadar College of Engineering
 
 ## 1. ABSTRACT
 
-Modern cloud-native computing relies heavily on Kubernetes to orchestrate microservice architectures. While container isolation mechanisms such as Linux namespaces and cgroups provide logical separation, containers share the underlying host operating system kernel. Consequently, traditional perimeter firewalls and pre-deployment static image vulnerability scanners fail to detect zero-day exploits, malicious privilege escalations, reverse shells, or credential theft occurring inside active containers. 
+Modern cloud-native computing relies heavily on Kubernetes to orchestrate microservice architectures. While container isolation mechanisms such as Linux namespaces and cgroups provide logical separation, containers share the underlying host operating system kernel. Consequently, traditional perimeter firewalls and pre-deployment static image vulnerability scanners fail to detect zero-day exploits, malicious privilege escalations, reverse shells, or credential theft occurring inside active containers.
 
-This project presents **Runtime Threat Mitigation in Kubernetes (RTM_Kubernetes)**, an end-to-end framework that couples deep kernel-level telemetry with an autonomous, risk-proportionate response controller. Detection is achieved via **Falco** utilizing the modern extended Berkeley Packet Filter (**modern_ebpf**) engine with Compile Once – Run Everywhere (**CO-RE**) capabilities, observing system call events in real time without kernel modification. Detected threats, mapped to MITRE ATT&CK for Containers, are routed via **Falcosidekick** to an autonomous **Response Engine**. 
+This project presents **Runtime Threat Mitigation in Kubernetes (RTM_Kubernetes)**, an end-to-end framework that couples deep kernel-level telemetry with an autonomous, risk-proportionate response controller. Detection is achieved via **Falco** utilizing the modern extended Berkeley Packet Filter (**modern_ebpf**) engine with Compile Once – Run Everywhere (**CO-RE**) capabilities, observing system call events in real time without kernel modification. Detected threats, mapped to MITRE ATT&CK for Containers, are routed via **Falcosidekick** to an autonomous **Response Engine**.
 
 To prevent denial-of-service induced by indiscriminate pod terminations, the system implements a **Graduated Response Strategy** alongside `detect_only` and `always_delete` policies. Threat containment actions range from non-disruptive egress blocking via dynamic Kubernetes `NetworkPolicy` injection (`isolate_network`) to rapid pod termination (`kill_pod`) upon repeated or critical violations. Empirical benchmarking across 36 runs demonstrates that the response controller achieves internal decision latencies between **18 ms and 45 ms**. Under the graduated policy, network isolation preserves **100.0% service availability with 0.0 seconds of downtime**, contrasted with ~8–9 seconds of downtime observed under immediate pod deletion in single-replica environments. Furthermore, a two-replica deployment absorbs pod evictions with zero service interruption. Finally, a comprehensive evaluation audit explicitly identifies data attribution anomalies and probe sampling limitations, providing a transparent, scientifically validated foundation for cloud-native runtime security.
 
@@ -196,7 +196,7 @@ where $\text{id}_{rtm} \in \{\text{RTM-001}, \dots, \text{RTM-008}\}$, $\text{id
 
 2. **Graduated Decision Policy:**
    Under the `graduated` strategy:
-   $$\text{Action}(A) = \begin{cases} 
+   $$\text{Action}(A) = \begin{cases}
    \text{alert\_only}, & \text{if } \text{Severity}(A) = \text{LOW} \land \text{Count}(\text{id}_{cont}) < \theta_{escalate} \\
    \text{isolate\_network}, & \text{if } \text{Severity}(A) = \text{MEDIUM} \lor (\text{Count} \ge \theta_{escalate} \land \text{Severity} < \text{HIGH}) \\
    \text{kill\_pod}, & \text{if } \text{Severity}(A) = \text{CRITICAL} \lor \text{Count} \ge \theta_{critical}
@@ -253,15 +253,15 @@ To determine whether the ~8–9 seconds of downtime observed under `always_delet
 
 In accordance with strict scientific integrity, all experimental anomalies, data discrepancies, and environment limitations identified during the Phase 2 audit are explicitly documented below:
 
-1. **Evaluation CSV Strategy Attribution Anomaly:**  
+1. **Evaluation CSV Strategy Attribution Anomaly:**
    In the active 36-run evaluation dataset (`docs/evaluation-results.csv`), 12 rows were recorded under the column header `alert_only`. However, `alert_only` is a response action rather than a supported controller strategy (`detect_only`, `graduated`, `always_delete`). Crucially, rows within this group recorded active mitigation actions (`isolate_network` for E2 and `kill_pod` for E3). Therefore, these 12 rows cannot be scientifically interpreted as a valid unmitigated baseline (zero containment). As documented in `docs/evaluation-summary.md`, strategy attribution for this group remains unresolved pending a clean rerun.
-2. **End-to-End Alert Forwarding Verification Status:**  
-   While Falco reliably detected kernel syscall events for RTM-001 through RTM-008 during verification runs, subsequent cluster inspections revealed that the stub-receiver endpoint `/alerts` did not receive expected HTTP POST requests from Falcosidekick. Live verification must be re-established to guarantee closed-loop automation in the production cluster.
-3. **WSL2 Kernel BPF Iterator Limitation (KI-001):**  
+2. **End-to-End Alert Forwarding Verification Status:**
+    Falco detection was verified for RTM-001 through RTM-008. Subsequent cluster logs showed successful Falcosidekick webhook POSTs (`POST OK`, HTTP 200) and HTTP 200 responses from the controller `/alerts` endpoint. This confirms alert delivery in the observed session, but does not establish successful live mitigation. Network isolation, pod termination, and recovery still require separate live-enforcement validation.
+3. **WSL2 Kernel BPF Iterator Limitation (KI-001):**
    The Microsoft WSL2 kernel (6.6.87) does not support BPF task and socket iterators (`libpman: disabled BPF iterators`), causing Falco to fall back to `/proc` lookups and occasionally losing process ancestry. This was mitigated by applying a custom `hostPID: true` daemonset patch (`manifests/falco/hostpid-patch.yaml`).
-4. **Single-Host Kind eBPF Alert Duplication (KI-002):**  
+4. **Single-Host Kind eBPF Alert Duplication (KI-002):**
    Because Kind executes both control-plane and worker nodes within Docker containers on a single host Linux kernel, both Falco DaemonSet pods bind to the same eBPF ring buffer, firing duplicate alerts (2x per event). This was addressed by implementing controller-side deduplication.
-5. **Availability Probe Sampling Rate Limitation:**  
+5. **Availability Probe Sampling Rate Limitation:**
    During the 2-minute availability tests, 61–63 HTTP probes were registered rather than the expected 240 (at 0.5s intervals). While zero failures occurred, probe timing calibration is necessary before treating the results as continuous proof.
 
 ---

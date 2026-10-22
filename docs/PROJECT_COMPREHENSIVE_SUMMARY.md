@@ -125,9 +125,9 @@ To maintain absolute academic rigor, the following findings and limitations must
    - Furthermore, rows within this group record active enforcement actions (`isolate_network` for E2 and `kill_pod` for E3).
    - *Status:* Correctly documented in `docs/evaluation-summary.md` as "unresolved strategy attribution." These rows must not be presented as baseline unmitigated tests.
 2. **End-to-End Alert Forwarding Verification:**
-   - Syscall detection in Falco was verified for RTM-001 through RTM-008.
-   - However, during the final live cluster check, the receiver endpoint `/alerts` did not register expected HTTP POST requests from Falcosidekick.
-   - *Root cause:* Network webhook routing or sidekick buffer configuration requires end-to-end verification in the active cluster session.
+   - Falco syscall detection was verified for RTM-001 through RTM-008.
+   - Subsequent cluster logs confirmed successful Falcosidekick webhook POSTs (`POST OK`, HTTP 200) and HTTP 200 responses from the controller's `/alerts` endpoint.
+   - This confirms alert forwarding and receipt in the observed session; it does not by itself prove successful live mitigation, which remains pending separate enforcement validation.
 3. **WSL2 Kernel eBPF Iterators (KI-001):**
    - Microsoft WSL2 kernel 6.6.87 lacks support for BPF task/socket iterators. Falco issues a non-fatal warning and falls back to `/proc` scanning.
    - Mitigated via `hostpid-patch.yaml`.

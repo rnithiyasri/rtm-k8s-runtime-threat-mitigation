@@ -56,7 +56,7 @@
 ## 4. Demonstration / Output Shown
 
 - **Automated Test Suite Execution:** Verified 14 passing unit tests in `tests/test_decision.py` verifying response decisions, escalation state transitions, and label-selector protection.
-- **Microsecond Decision Latency:** Demonstrated controller internal processing latency (`received_to_action_s`) ranging between **18 ms and 45 ms** across all enforced threat scenarios.
+- **Millisecond Decision Latency:** Demonstrated controller internal processing latency (`received_to_action_s`) ranging between **18 ms and 45 ms** across all enforced threat scenarios.
 - **Graduated Isolation Containment:** Demonstrated live dynamic injection of Kubernetes `NetworkPolicy` isolating malicious pod egress on token reading (E2) with **100% service availability and 0.0s downtime**.
 - **Multi-Replica Availability Resilience:** Demonstrated victim deployment scaled to 2 replicas absorbing pod termination under `always_delete` policy with **100% uptime (61-63 successful probes, 0 failures, 0.0s downtime)**.
 
