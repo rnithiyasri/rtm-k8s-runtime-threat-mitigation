@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # scripts/verify-rtm-rules.sh
 # Runs each RTM scenario, waits up to 20 s for the alert to appear in
-# stub-receiver /alerts/recent, then prints a PASS/FAIL table.
+# rtm-controller /alerts/recent, then prints a PASS/FAIL table.
 # Exit 0 only when all rules PASS.
 set -euo pipefail
 
 NS="${SHOP_NS:-shop}"
+RECEIVER_NS="${RECEIVER_NS:-rtm-system}"
+RECEIVER_SVC="${RECEIVER_SVC:-rtm-controller}"
 WAIT="${VERIFY_WAIT_SECS:-20}"
 PF_PORT="${PF_PORT:-18765}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -22,9 +24,9 @@ stub_pod() {
     -o jsonpath='{.items[0].metadata.name}'
 }
 
-# Start port-forward to stub-receiver in background
+# Start port-forward to rtm-controller in background
 start_pf() {
-  kubectl port-forward -n "${NS}" svc/stub-receiver "${PF_PORT}:8000" \
+  kubectl port-forward -n "${RECEIVER_NS}" "svc/${RECEIVER_SVC}" "${PF_PORT}:8000" \
     >/dev/null 2>&1 &
   PF_PID=$!
   sleep 2   # wait for it to bind
@@ -32,14 +34,14 @@ start_pf() {
 
 stop_pf() { kill "${PF_PID}" 2>/dev/null || true; }
 
-recent_ids() {
+count_for_rule() {
+  local id="$1"
   curl -sf "http://127.0.0.1:${PF_PORT}/alerts/recent" \
     | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
-for a in d.get('alerts', []):
-    print(a.get('rtm_id',''))
-" 2>/dev/null | sort -u
+print(sum(1 for a in d.get('alerts', []) if a.get('rtm_id') == '$id'))
+" 2>/dev/null
 }
 
 flush_alerts() {
@@ -49,9 +51,12 @@ flush_alerts() {
 
 wait_for_rule() {
   local id="$1"
+  local baseline="$2"
   local deadline=$(( $(date +%s) + WAIT ))
   while [[ $(date +%s) -lt $deadline ]]; do
-    if recent_ids | grep -q "^${id}$"; then
+    local current
+    current="$(count_for_rule "$id")" || return 1
+    if [[ "$current" =~ ^[0-9]+$ ]] && (( current > baseline )); then
       return 0
     fi
     sleep 2
@@ -98,9 +103,15 @@ declare -A RESULT
 
 for id in "${RULES[@]}"; do
   printf "Testing %-10s ... " "${id}"
+  baseline="$(count_for_rule "$id")"
+  if [[ ! "$baseline" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: Could not read receiver alerts"
+    exit 1
+  fi
+
   exec_scenario "${id}" "${POD}"
   flush_alerts
-  if wait_for_rule "${id}"; then
+  if wait_for_rule "${id}" "$baseline"; then
     RESULT[$id]="PASS"
     echo "PASS"
   else

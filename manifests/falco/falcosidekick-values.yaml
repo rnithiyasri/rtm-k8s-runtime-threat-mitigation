@@ -3,7 +3,7 @@ replicaCount: 1
 
 config:
   webhook:
-    address: "http://stub-receiver.shop.svc.cluster.local:8000/alerts"
+    address: "http://rtm-controller.rtm-system.svc.cluster.local:8000/alerts"
     minimumpriority: ""
 
 webui:
