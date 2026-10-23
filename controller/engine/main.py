@@ -15,6 +15,7 @@ from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from kubernetes import client, config
 
 from decision import DecisionEngine, evaluate_dry_run
@@ -75,6 +76,15 @@ def parse_alert(body: dict) -> Optional[dict]:
         "user": fields.get("user.name"),
         "cmdline": fields.get("proc.cmdline"),
         "hostname": body.get("hostname") or fields.get("hostname"),
+        # Decision fields — populated after decision engine runs
+        "received_at": None,
+        "decided_at": None,
+        "dedupe_suppressed": None,
+        "distinct_rule_count_in_window": None,
+        "strategy": None,
+        "dry_run": None,
+        "action_taken": None,
+        "gate_blocked_reason": None,
     }
 
 
@@ -88,6 +98,14 @@ class AlertStore:
     def add(self, alert: dict) -> None:
         with self._lock:
             self._items.append(alert)
+
+    def update_last(self, alert_obj_id: int, fields: dict) -> None:
+        """Update a record in the ring buffer by object id (reference equality)."""
+        with self._lock:
+            for item in self._items:
+                if id(item) == alert_obj_id:
+                    item.update(fields)
+                    return
 
     def recent(self) -> list:
         with self._lock:
@@ -106,10 +124,39 @@ store = AlertStore()
 engine = DecisionEngine(strategy=get_strategy())
 app = FastAPI(title="rtm-controller")
 
+# ---------------------------------------------------------------------------
+# CORS — dev/demo only. Allows the dashboard (http://localhost:5173 or
+# http://localhost:8080) to poll GET endpoints from a browser.
+# Restricted to GET only; no write verbs are exposed to the frontend.
+# ---------------------------------------------------------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:8080",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:8080",
+        "null",   # allows file:// origins (index.html opened directly in browser)
+    ],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
+
 
 @app.get("/healthz")
 def healthz():
     return {"status": "ok", "service": "rtm-controller"}
+
+
+@app.get("/config")
+def get_config():
+    """Read-only: return current strategy/dry_run/enforce_label_selector from env.
+    No write operations. Safe to expose to the dashboard."""
+    return {
+        "strategy": get_strategy(),
+        "dry_run": DRY_RUN_ENV,
+        "enforce_label_selector": ENFORCE_LABEL_SELECTOR,
+    }
 
 
 @app.get("/alerts/recent")
@@ -118,8 +165,38 @@ def alerts_recent():
     return {"count": len(alerts), "alerts": alerts}
 
 
+@app.get("/pods/status")
+def pods_status(namespace: str = "shop"):
+    """Read-only: return pod name, labels (rtm.enforce, rtm.tier), phase, restart count.
+    Uses the existing Kubernetes Role which already grants get/list on pods in
+    namespace shop. No new RBAC verbs are required."""
+    if v1_api is None:
+        return {"error": "kubernetes_client_unavailable", "pods": []}
+    try:
+        pod_list = v1_api.list_namespaced_pod(namespace=namespace)
+    except Exception as e:
+        return {"error": str(e), "pods": []}
+
+    result = []
+    for pod in pod_list.items:
+        labels = pod.metadata.labels or {}
+        containers = pod.status.container_statuses or []
+        restart_count = sum(c.restart_count for c in containers)
+        result.append({
+            "name": pod.metadata.name,
+            "namespace": pod.metadata.namespace,
+            "phase": pod.status.phase,
+            "labels": labels,
+            "rtm_enforce": labels.get("rtm.enforce"),
+            "rtm_tier": labels.get("rtm.tier"),
+            "restart_count": restart_count,
+        })
+    return {"namespace": namespace, "pods": result}
+
+
 @app.post("/alerts")
 async def receive_alert(request: Request):
+    received_ts = time.time()
     body = await request.json()
     alert = parse_alert(body)
     if alert is None:
@@ -130,9 +207,20 @@ async def receive_alert(request: Request):
         )
         return {"received": True, "stored": False}
 
+    # Stamp received_at before adding to store
+    alert["received_at"] = received_ts
+
     # Store EVERY RTM alert in 200-item ring buffer before any filtering
     store.add(alert)
-    logger.info(json.dumps(alert, separators=(",", ":")))
+    alert_obj_id = id(alert)
+    logger.info(json.dumps(
+        {k: v for k, v in alert.items() if k not in (
+            "received_at", "decided_at", "dedupe_suppressed",
+            "distinct_rule_count_in_window", "strategy",
+            "dry_run", "action_taken", "gate_blocked_reason"
+        )},
+        separators=(",", ":")
+    ))
 
     # Sync strategy from current environment
     current_strategy = get_strategy()
@@ -140,16 +228,29 @@ async def receive_alert(request: Request):
 
     # Evaluate decision
     decision = engine.decide(alert)
+
     if decision is None:
+        # Dedupe suppressed — record this on the stored alert
+        store.update_last(alert_obj_id, {
+            "dedupe_suppressed": True,
+            "decided_at": time.time(),
+            "strategy": current_strategy,
+            "dry_run": DRY_RUN_ENV,
+            "action_taken": "suppressed",
+            "gate_blocked_reason": None,
+            "distinct_rule_count_in_window": None,
+        })
         return {"received": True, "stored": True, "action": None}
 
     pod = decision["pod"]
     action = decision["action"]
     alert_ts = decision["alert_ts"]
-    received_ts = decision["received_ts"]
+    received_ts_dec = decision["received_ts"]
+    distinct_count = len(decision.get("rtm_ids", []))
 
     # Determine safety / dry_run
     pod_labels = {}
+    gate_blocked_reason = None
     if v1_api is not None:
         try:
             pod_obj = v1_api.read_namespaced_pod(name=pod, namespace="shop")
@@ -164,9 +265,18 @@ async def receive_alert(request: Request):
         strategy=current_strategy,
     )
 
+    # Compute gate_blocked_reason for dashboard display
+    if str(pod_labels.get("rtm.enforce", "")).lower() != "true":
+        gate_blocked_reason = f"pod_missing_label:{ENFORCE_LABEL_SELECTOR}"
+    elif current_strategy == "detect_only":
+        gate_blocked_reason = "strategy_detect_only"
+    elif DRY_RUN_ENV:
+        gate_blocked_reason = "dry_run_env=true"
+
     if is_dry:
         logger.info("STRATEGY=%s WOULD %s pod %s", current_strategy, action, pod)
     else:
+        gate_blocked_reason = None  # enforcement is live — no block
         logger.info("STRATEGY=%s ACTION %s pod %s", current_strategy, action, pod)
         if current_strategy != "detect_only" and v1_api is not None:
             if action == "isolate_network":
@@ -184,7 +294,18 @@ async def receive_alert(request: Request):
                 except Exception as e:
                     logger.error("Failed to delete pod %s: %s", pod, e)
 
-    action_done_ts = time.time()
+    decided_at = time.time()
+
+    # Update the stored alert record with full decision metadata
+    store.update_last(alert_obj_id, {
+        "decided_at": decided_at,
+        "dedupe_suppressed": False,
+        "distinct_rule_count_in_window": distinct_count,
+        "strategy": current_strategy,
+        "dry_run": is_dry,
+        "action_taken": action,
+        "gate_blocked_reason": gate_blocked_reason,
+    })
 
     # One JSON log line per decision, including strategy
     decision_record = {
@@ -193,9 +314,11 @@ async def receive_alert(request: Request):
         "rtm_ids": decision["rtm_ids"],
         "action": action,
         "dry_run": is_dry,
+        "gate_blocked_reason": gate_blocked_reason,
         "alert_ts": alert_ts,
-        "received_ts": received_ts,
-        "action_done_ts": action_done_ts,
+        "received_ts": received_ts_dec,
+        "action_done_ts": decided_at,
+        "distinct_rule_count_in_window": distinct_count,
     }
     logger.info(json.dumps(decision_record, separators=(",", ":")))
 
