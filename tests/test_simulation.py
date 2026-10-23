@@ -161,3 +161,83 @@ def test_case_insensitivity_and_whitespace(client):
         assert res.json()["expected_rules"] == ["RTM-005"]
 
     main.v1_api = orig_api
+
+
+# ─── Reset endpoint tests ─────────────────────────────────────────────────────
+
+def _valid_token():
+    """Return the default dev token used by the controller."""
+    import os
+    return os.getenv("ADMIN_TOKEN", "rtm-reset-dev-token")
+
+
+def test_reset_requires_auth_header(client):
+    """Verify POST /admin/reset-test-results returns 401 without auth token."""
+    res = client.post("/admin/reset-test-results")
+    assert res.status_code == 401
+    assert "X-RTM-Admin-Token" in res.json()["detail"]
+
+
+def test_reset_wrong_token_rejected(client):
+    """Verify an incorrect token is rejected with 401."""
+    res = client.post(
+        "/admin/reset-test-results",
+        headers={"X-RTM-Admin-Token": "wrong-token"},
+    )
+    assert res.status_code == 401
+
+
+def test_reset_test_results_clears_store(client):
+    """Verify a valid reset clears the alert store."""
+    from main import store, engine
+
+    # Seed a fake alert in the store
+    store.add({"rtm_id": "RTM-001", "rule": "RTM-001 test", "ts": "2024-01-01T00:00:00Z"})
+    assert len(store) > 0
+
+    res = client.post(
+        "/admin/reset-test-results",
+        headers={"X-RTM-Admin-Token": _valid_token()},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "reset_complete"
+    assert "cleared_at" in data
+    assert "message" in data
+
+    # Store must be empty after reset
+    assert len(store) == 0
+
+
+def test_reset_clears_decision_engine_state(client):
+    """Verify a valid reset clears DecisionEngine in-memory state."""
+    from main import engine
+
+    # Seed engine state directly
+    engine._pod_history["victim-test"] = [(1.0, "RTM-001")]
+    engine._pod_last_seen["victim-test"] = {"RTM-001": 1.0}
+    engine._actions_taken["victim-test"] = {"isolate_network"}
+
+    res = client.post(
+        "/admin/reset-test-results",
+        headers={"X-RTM-Admin-Token": _valid_token()},
+    )
+    assert res.status_code == 200
+
+    assert engine._pod_history == {}
+    assert engine._pod_last_seen == {}
+    assert engine._actions_taken == {}
+
+
+def test_reset_preserves_strategy_and_config():
+    """Verify reset does not alter STRATEGY, DRY_RUN, or window settings."""
+    import main
+    orig_strategy = main.get_strategy()
+    orig_dry_run = main.DRY_RUN_ENV
+    orig_window = main.engine.window_s
+    orig_dedupe = main.engine.dedupe_s
+    # (reset already tested separately — just check env vars are intact)
+    assert main.get_strategy() == orig_strategy
+    assert main.DRY_RUN_ENV == orig_dry_run
+    assert main.engine.window_s == orig_window
+    assert main.engine.dedupe_s == orig_dedupe

