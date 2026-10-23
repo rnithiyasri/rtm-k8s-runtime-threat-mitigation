@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rtm-dashboard
+  namespace: shop
+  labels:
+    app: rtm-dashboard
+    app.kubernetes.io/part-of: rtm-k8s
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rtm-dashboard
+  template:
+    metadata:
+      labels:
+        app: rtm-dashboard
+    spec:
+      containers:
+        - name: web
+          image: nginx:alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+              name: http
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: html-volume
+              mountPath: /usr/share/nginx/html
+      volumes:
+        - name: html-volume
+          configMap:
+            name: rtm-dashboard-html
