@@ -301,14 +301,24 @@ async function poll() {
 // ─── Copy buttons ─────────────────────────────────────────────────────────────
 
 // ─── Threat Injection Simulation ─────────────────────────────────────────────
+// E1–E4 are active in the dashboard. E5–E8 are temporarily disabled.
+// To re-enable any scenario: add to ENABLED_SCENARIOS and remove 'disabled' from index.html.
+const ENABLED_SCENARIOS = new Set(['E1', 'E2', 'E3', 'E4']);
 let isSimulationRunning = false;
 
 function initThreatInjection() {
   const buttons = document.querySelectorAll('.threat-btn');
   buttons.forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', (e) => {
+      if (btn.disabled) {
+        e.preventDefault();
+        return;
+      }
       const scenario = btn.getAttribute('data-scenario');
-      if (!scenario) return;
+      if (!scenario || !ENABLED_SCENARIOS.has(scenario)) {
+        e.preventDefault();
+        return;
+      }
       triggerSimulation(scenario, btn);
     });
   });
@@ -316,7 +326,13 @@ function initThreatInjection() {
 
 function setButtonsDisabled(disabled) {
   document.querySelectorAll('.threat-btn').forEach(b => {
-    b.disabled = disabled;
+    const scenario = b.getAttribute('data-scenario');
+    if (!ENABLED_SCENARIOS.has(scenario)) {
+      // E5–E8 remain disabled at all times
+      b.disabled = true;
+    } else {
+      b.disabled = disabled;
+    }
   });
 }
 
@@ -343,6 +359,7 @@ function setSimulationError(scenario, errorMsg, btn) {
 
 async function triggerSimulation(scenario, btn) {
   if (isSimulationRunning) return;
+  if (!ENABLED_SCENARIOS.has(scenario)) return;
   isSimulationRunning = true;
 
   // 1. Disable all buttons, mark active button loading

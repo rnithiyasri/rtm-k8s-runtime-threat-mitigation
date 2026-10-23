@@ -243,7 +243,7 @@ data:
               <div class="threat-spinner" aria-hidden="true"></div>
             </button>
     
-            <button class="threat-btn" id="btn-e5" data-scenario="E5" type="button" title="Trigger E5 Sensitive File Read">
+            <button class="threat-btn" id="btn-e5" data-scenario="E5" type="button" title="Trigger E5 Sensitive File Read" disabled>
               <div class="threat-btn-top">
                 <span class="threat-id">E5</span>
                 <span class="threat-rule-tag">RTM-002</span>
@@ -253,7 +253,7 @@ data:
               <div class="threat-spinner" aria-hidden="true"></div>
             </button>
     
-            <button class="threat-btn" id="btn-e6" data-scenario="E6" type="button" title="Trigger E6 Package Tool Execution">
+            <button class="threat-btn" id="btn-e6" data-scenario="E6" type="button" title="Trigger E6 Package Tool Execution" disabled>
               <div class="threat-btn-top">
                 <span class="threat-id">E6</span>
                 <span class="threat-rule-tag">RTM-004</span>
@@ -263,7 +263,7 @@ data:
               <div class="threat-spinner" aria-hidden="true"></div>
             </button>
     
-            <button class="threat-btn" id="btn-e7" data-scenario="E7" type="button" title="Trigger E7 Public Egress Connection">
+            <button class="threat-btn" id="btn-e7" data-scenario="E7" type="button" title="Trigger E7 Public Egress Connection" disabled>
               <div class="threat-btn-top">
                 <span class="threat-id">E7</span>
                 <span class="threat-rule-tag">RTM-006</span>
@@ -273,7 +273,7 @@ data:
               <div class="threat-spinner" aria-hidden="true"></div>
             </button>
     
-            <button class="threat-btn" id="btn-e8" data-scenario="E8" type="button" title="Trigger E8 Crypto Miner Simulation">
+            <button class="threat-btn" id="btn-e8" data-scenario="E8" type="button" title="Trigger E8 Crypto Miner Simulation" disabled>
               <div class="threat-btn-top">
                 <span class="threat-id">E8</span>
                 <span class="threat-rule-tag">RTM-008</span>
@@ -709,14 +709,24 @@ data:
     // ─── Copy buttons ─────────────────────────────────────────────────────────────
     
     // ─── Threat Injection Simulation ─────────────────────────────────────────────
+    // E1–E4 are active in the dashboard. E5–E8 are temporarily disabled.
+    // To re-enable any scenario: add to ENABLED_SCENARIOS and remove 'disabled' from index.html.
+    const ENABLED_SCENARIOS = new Set(['E1', 'E2', 'E3', 'E4']);
     let isSimulationRunning = false;
     
     function initThreatInjection() {
       const buttons = document.querySelectorAll('.threat-btn');
       buttons.forEach(btn => {
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', (e) => {
+          if (btn.disabled) {
+            e.preventDefault();
+            return;
+          }
           const scenario = btn.getAttribute('data-scenario');
-          if (!scenario) return;
+          if (!scenario || !ENABLED_SCENARIOS.has(scenario)) {
+            e.preventDefault();
+            return;
+          }
           triggerSimulation(scenario, btn);
         });
       });
@@ -724,7 +734,13 @@ data:
     
     function setButtonsDisabled(disabled) {
       document.querySelectorAll('.threat-btn').forEach(b => {
-        b.disabled = disabled;
+        const scenario = b.getAttribute('data-scenario');
+        if (!ENABLED_SCENARIOS.has(scenario)) {
+          // E5–E8 remain disabled at all times
+          b.disabled = true;
+        } else {
+          b.disabled = disabled;
+        }
       });
     }
     
@@ -751,6 +767,7 @@ data:
     
     async function triggerSimulation(scenario, btn) {
       if (isSimulationRunning) return;
+      if (!ENABLED_SCENARIOS.has(scenario)) return;
       isSimulationRunning = true;
     
       // 1. Disable all buttons, mark active button loading
